@@ -42,7 +42,7 @@ const EmergencySignalFlare: React.FC<{ offset: number }> = ({ offset }) => {
     const drift = phase * 18;
     flareRef.current.position.set(drift, y, drift * 0.6);
     const scale = phase < 0.88 ? 1.0 : Math.max(0.01, (1 - phase) * 8);
-    flareRef.current.scale.setScalar(scale);
+    flareRef.current.scale.set(scale, scale, scale);
   });
   return (
     <mesh ref={flareRef} position={[0, 12, 0]}>

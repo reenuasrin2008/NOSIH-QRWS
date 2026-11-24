@@ -31,8 +31,9 @@ def _enum_val(value: Any) -> Any:
 class VersionedResponseCache:
     """In-memory cache keyed by event_bus.world_version with automatic invalidation."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_entries: int = 512) -> None:
         self._version: int = -1
+        self._max_entries: int = max(16, max_entries)
         self._store: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
         self.hits: int = 0
         self.misses: int = 0
@@ -52,6 +53,9 @@ class VersionedResponseCache:
             return cached
         self.misses += 1
         result = builder()
+        if len(self._store) >= self._max_entries:
+            oldest_key = next(iter(self._store))
+            self._store.pop(oldest_key, None)
         self._store[key] = result
         return result
 
@@ -760,7 +764,7 @@ def build_v2_router(services: Any) -> APIRouter:
         entity_type: Optional[str],
         country_id: Optional[str],
     ) -> Dict[str, Any]:
-        q_norm = q.strip().lower()
+        q_norm = (q or "").strip().lower()[:200]
         if not q_norm:
             return _envelope(_world_version(), data=[], count=0)
 
@@ -1011,7 +1015,7 @@ def build_v2_router(services: Any) -> APIRouter:
         entity_type: Optional[str] = Query(default=None),
         country_id: Optional[str] = Query(default=None),
     ) -> Dict[str, Any]:
-        key = ("search", q.strip().lower(), limit, entity_type, country_id)
+        key = ("search", (q or "").strip().lower()[:200], limit, entity_type, country_id)
         return cache.get_or_build(
             _world_version(),
             key,

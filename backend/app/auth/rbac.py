@@ -8,6 +8,8 @@ from typing import Dict, List, Optional, Set
 from fastapi import Header, HTTPException
 from pydantic import BaseModel
 
+MAX_ACTIVE_TOKENS = 1000
+
 
 class OperatorRole(str, Enum):
     ADMINISTRATOR = "administrator"
@@ -114,6 +116,9 @@ class AuthService:
             permissions=sorted(ROLE_PERMISSIONS[role]),
             must_change_password=record["must_change_password"] == "true",
         )
+        if len(self._tokens) >= MAX_ACTIVE_TOKENS:
+            oldest_token = next(iter(self._tokens))
+            del self._tokens[oldest_token]
         self._tokens[token] = session
         return {"token": token, "session": session}
 

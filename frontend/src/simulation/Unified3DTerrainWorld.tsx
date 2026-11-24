@@ -166,6 +166,12 @@ const SculptedTerrainMesh: React.FC<{ archetype: string; floodBoost: number }> =
     return geo;
   }, [archetype, waterLevel]);
 
+  useEffect(() => {
+    return () => {
+      geometry.dispose();
+    };
+  }, [geometry]);
+
   useFrame((state) => {
     if (waterRef.current) {
       waterRef.current.position.y = waterLevel + Math.sin(state.clock.elapsedTime * 1.4) * 0.18;
@@ -222,6 +228,25 @@ const GtaWorldScene: React.FC<{
     }
     return list;
   }, [archetype, waterLevel]);
+
+  useEffect(() => {
+    return () => {
+      commercialTex.dispose();
+      residentialTex.dispose();
+    };
+  }, [commercialTex, residentialTex]);
+
+  useEffect(() => {
+    return () => {
+      asphaltTex.dispose();
+    };
+  }, [asphaltTex]);
+
+  useEffect(() => {
+    return () => {
+      roadGeometries.forEach((g) => g.dispose());
+    };
+  }, [roadGeometries]);
 
   // GTA Downtown Skyscrapers & Mid-rise Blocks seated between boulevards on real terrain height
   const buildings = useMemo(() => {
@@ -596,10 +621,11 @@ export const Unified3DTerrainWorld: React.FC<UnifiedTerrainProps> = ({
 
   useEffect(() => {
     let active = true;
+    const ac = new AbortController();
     const load = () => {
       globalApi.getOverview().catch(() => {});
-      fetch(`/api/world/live-entities/${countryId}`)
-        .then((r) => r.json())
+      fetch(`/api/world/live-entities/${countryId}`, { signal: ac.signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
         .then((d) => {
           if (active) setLiveData(d);
         })
@@ -609,6 +635,7 @@ export const Unified3DTerrainWorld: React.FC<UnifiedTerrainProps> = ({
     const id = window.setInterval(load, 2500);
     return () => {
       active = false;
+      ac.abort();
       window.clearInterval(id);
     };
   }, [countryId]);

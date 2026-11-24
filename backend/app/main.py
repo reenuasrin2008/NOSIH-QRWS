@@ -3,6 +3,7 @@ import app.core.compat  # noqa: F401
 import asyncio
 import logging
 
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
@@ -90,6 +91,7 @@ class AppRuntime:
         self.repo: ExperimentRepository = ExperimentRepository()
         self.ws_manager: ConnectionManager = ConnectionManager()
         self.tick_task: Optional[asyncio.Task] = None
+        self.global_tick_task: Optional[asyncio.Task] = None
 
     def active_world(self) -> SimulationWorld:
         return self.benchmark.worlds[self.benchmark.active_view] if self.benchmark is not None else self.world
@@ -119,36 +121,53 @@ runtime = AppRuntime()
 
 async def simulation_loop():
     while True:
-        await asyncio.sleep(0.25)
-        w = runtime.active_world()
-        ticks = max(1, int(round(w.speed_multiplier)))
-        advanced = False
-        if runtime.benchmark is not None:
-            if any(bw.status == SimulationStatus.RUNNING for bw in runtime.benchmark.worlds.values()):
+        try:
+            await asyncio.sleep(0.25)
+            w = runtime.active_world()
+            ticks = max(1, int(round(w.speed_multiplier)))
+            advanced = False
+            if runtime.benchmark is not None:
+                if any(bw.status == SimulationStatus.RUNNING for bw in runtime.benchmark.worlds.values()):
+                    for _ in range(ticks):
+                        runtime.benchmark.step_all(dt=1.0)
+                    advanced = True
+            elif runtime.world.status == SimulationStatus.RUNNING:
                 for _ in range(ticks):
-                    runtime.benchmark.step_all(dt=1.0)
+                    runtime.world.step(dt=1.0)
                 advanced = True
-        elif runtime.world.status == SimulationStatus.RUNNING:
-            for _ in range(ticks):
-                runtime.world.step(dt=1.0)
-            advanced = True
-        if advanced and runtime.ws_manager.active:
-            await runtime.ws_manager.broadcast(runtime.current_payload(include_city=False))
+            if advanced and runtime.ws_manager.active:
+                await runtime.ws_manager.broadcast(runtime.current_payload(include_city=False))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("simulation_loop tick error (continuing): %s", exc)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     runtime.tick_task = asyncio.create_task(simulation_loop())
-    global_tick_task = asyncio.create_task(global_simulation_loop())
+    runtime.global_tick_task = asyncio.create_task(global_simulation_loop())
     try:
         yield
     finally:
-        if runtime.tick_task:
-            runtime.tick_task.cancel()
+        tasks_to_cancel = [t for t in (runtime.tick_task, runtime.global_tick_task) if t is not None]
+        for t in tasks_to_cancel:
+            t.cancel()
+        if tasks_to_cancel:
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
+        runtime.tick_task = None
+        runtime.global_tick_task = None
+        for mgr in (runtime.ws_manager, global_ws_manager):
+            for ws in list(mgr.active):
+                try:
+                    await ws.close()
+                except Exception:
+                    pass
+                mgr.disconnect(ws)
 
 
 app = FastAPI(title="QUANTUM RESCUE — 3D Autonomous Drone Simulation & Optimization API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/api/health")
@@ -444,6 +463,10 @@ async def ws_simulation(ws: WebSocket):
         while True:
             _ = await ws.receive_text()
     except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("WebSocket /ws/simulation error: %s", exc)
+    finally:
         runtime.ws_manager.disconnect(ws)
 
 
@@ -457,17 +480,28 @@ global_services = GlobalPlatformServices()
 global_ws_manager = ConnectionManager()
 
 
+def _log_broadcast_task_error(task: asyncio.Task) -> None:
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.warning("Background WS broadcast failed: %s", exc)
+
+
 def _schedule_global_broadcast(msg: Dict[str, Any]) -> None:
     try:
         loop = asyncio.get_running_loop()
         if global_ws_manager.active:
-            loop.create_task(global_ws_manager.broadcast(msg))
+            t1 = loop.create_task(global_ws_manager.broadcast(msg))
+            t1.add_done_callback(_log_broadcast_task_error)
         if runtime.ws_manager.active and msg.get("type") == "frontend_command":
-            loop.create_task(runtime.ws_manager.broadcast({
+            cmd = msg.get("command") or {}
+            t2 = loop.create_task(runtime.ws_manager.broadcast({
                 "type": "ui_sync",
-                "action": msg["command"]["command_type"],
-                "payload": msg["command"],
+                "action": cmd.get("command_type", "unknown"),
+                "payload": cmd,
             }))
+            t2.add_done_callback(_log_broadcast_task_error)
     except RuntimeError as exc:
         logger.debug("No running event loop for broadcast: %s", exc)
 
@@ -498,6 +532,10 @@ async def ws_global(ws: WebSocket, client: str = Query(default="quantum-world"))
             if raw == "ping":
                 await ws.send_json({"type": "pong"})
     except WebSocketDisconnect:
+        pass
+    except Exception as exc:
+        logger.warning("WebSocket /ws/global error (client=%s): %s", client, exc)
+    finally:
         global_ws_manager.disconnect(ws)
         global_services.event_bus.unregister_frontend(client)
 
@@ -505,13 +543,18 @@ async def ws_global(ws: WebSocket, client: str = Query(default="quantum-world"))
 async def global_simulation_loop():
     """Continuous real-time background physics & living-world tick broadcaster."""
     while True:
-        await asyncio.sleep(2.5)
-        if not global_services.world.paused and not global_services.world.emergency_stopped:
-            global_services.world.step(dt_seconds=15.0)
-            if global_ws_manager.active:
-                await global_ws_manager.broadcast({
-                    "type": "global_snapshot",
-                    "overview": global_services.world.get_global_overview(),
-                    "approvals": global_services.approval_engine.list_approvals(),
-                    "providers": global_services.provider_manager.get_status(),
-                })
+        try:
+            await asyncio.sleep(2.5)
+            if not global_services.world.paused and not global_services.world.emergency_stopped:
+                global_services.world.step(dt_seconds=15.0)
+                if global_ws_manager.active:
+                    await global_ws_manager.broadcast({
+                        "type": "global_snapshot",
+                        "overview": global_services.world.get_global_overview(),
+                        "approvals": global_services.approval_engine.list_approvals(),
+                        "providers": global_services.provider_manager.get_status(),
+                    })
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.exception("global_simulation_loop tick error (continuing): %s", exc)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 import asyncio
+import json
 import os
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 import httpx
 
 DEFAULT_AI_TIMEOUT_SECONDS = 12.0
@@ -23,7 +24,9 @@ def build_provider_tool_payload(schemas: List[Dict[str, Any]]) -> Dict[str, Any]
     gemini_declarations: List[Dict[str, Any]] = []
     openai_tools: List[Dict[str, Any]] = []
 
-    for schema in schemas:
+    for schema in schemas or []:
+        if not isinstance(schema, dict):
+            continue
         name = str(schema.get("name", "")).strip()
         if not name:
             continue
@@ -104,7 +107,7 @@ class AIKeyPool:
 
     def record_error(self, key: KeyRecord, error_msg: str, is_rate_limit: bool = False) -> None:
         key.error_count += 1
-        key.last_error = error_msg[:180]
+        key.last_error = str(error_msg or "unknown error")[:180]
         if is_rate_limit:
             key.rate_limit_events += 1
         backoff = min(300.0, 10.0 * (2 ** min(4, key.error_count - 1)))
@@ -126,6 +129,7 @@ class AIKeyPool:
                 if k.key_id == key_id:
                     k.enabled = True
                     k.healthy = True
+                    k.error_count = 0
                     k.cooldown_until_ts = 0.0
                     return True
         return False
@@ -238,8 +242,29 @@ class GeminiAdapter(AIProvider):
         client = self.http_pool.get_client()
         resp = await client.post(url, json=payload)
         resp.raise_for_status()
-        data = resp.json()
-        return data["candidates"][0]["content"]["parts"][0]["text"]
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise ValueError(f"Malformed Gemini JSON response: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Malformed Gemini response: expected JSON object")
+        candidates = data.get("candidates")
+        if not isinstance(candidates, list) or not candidates or not isinstance(candidates[0], dict):
+            raise ValueError("Gemini response contained no candidates")
+        content = candidates[0].get("content")
+        if not isinstance(content, dict):
+            raise ValueError("Gemini candidate missing content object")
+        parts = content.get("parts")
+        if not isinstance(parts, list) or not parts:
+            raise ValueError("Gemini candidate contained no content parts")
+        texts = [
+            p.get("text")
+            for p in parts
+            if isinstance(p, dict) and isinstance(p.get("text"), str) and p.get("text").strip()
+        ]
+        if not texts:
+            raise ValueError("Gemini response parts contained no text")
+        return "\n".join(texts).strip()
 
     async def health_check(self, api_key: str, model: str) -> bool:
         return bool(api_key and model)
@@ -269,8 +294,22 @@ class GrokAdapter(AIProvider):
         client = self.http_pool.get_client()
         resp = await client.post(url, headers=headers, json=payload)
         resp.raise_for_status()
-        data = resp.json()
-        return data["choices"][0]["message"]["content"]
+        try:
+            data = resp.json()
+        except Exception as exc:
+            raise ValueError(f"Malformed Grok JSON response: {exc}") from exc
+        if not isinstance(data, dict):
+            raise ValueError("Malformed Grok response: expected JSON object")
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
+            raise ValueError("Grok response contained no choices")
+        message = choices[0].get("message")
+        if not isinstance(message, dict):
+            raise ValueError("Grok choice missing message object")
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("Grok response message contained empty or non-string content")
+        return content.strip()
 
     async def health_check(self, api_key: str, model: str) -> bool:
         return bool(api_key and model)
@@ -297,47 +336,82 @@ class AIProviderManager:
     async def aclose(self) -> None:
         await self.http_pool.aclose()
 
+    @staticmethod
+    def _coerce_context(grounded_context: Any) -> str:
+        if grounded_context is None:
+            return ""
+        if isinstance(grounded_context, str):
+            return grounded_context
+        try:
+            return json.dumps(grounded_context, default=str)
+        except Exception:
+            return str(grounded_context)
+
+    @staticmethod
+    def _is_rate_limit_error(exc: Exception) -> bool:
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response is not None:
+            if exc.response.status_code == 429:
+                return True
+        return "429" in str(exc)
+
     async def synthesize_narrative(
         self,
         user_query: str,
-        grounded_context: str,
+        grounded_context: Any,
         fallback_text: str,
         tool_schemas: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
-        """Try primary provider -> fallback provider -> deterministic grounded local fallback."""
+        """Try primary provider (rotating across all healthy keys) -> fallback provider -> deterministic grounded local fallback."""
+        safe_query = "" if user_query is None else str(user_query)
+        safe_context = self._coerce_context(grounded_context)
+        safe_fallback = "" if fallback_text is None else str(fallback_text)
+
         system_prompt = (
             "You are JARVIS, the Global Disaster Intelligence & Command Agent for Quantum Rescue. "
             "Report ONLY the exact figures, entity IDs, and facts present in the provided simulation context. "
             "Never fabricate numbers, casualties, or capabilities. Keep responses concise, structured, and operational."
         )
-        prompt = f"USER REQUEST: {user_query}\n\nAUTHORITATIVE SIMULATION DATA:\n{grounded_context}"
+        prompt = f"USER REQUEST: {safe_query}\n\nAUTHORITATIVE SIMULATION DATA:\n{safe_context}"
         provider_tools = build_provider_tool_payload(tool_schemas) if tool_schemas else None
 
+        provider_order: List[str] = []
         for prov in (self.primary_provider, self.fallback_provider):
+            if prov and prov in self.adapters and prov not in provider_order:
+                provider_order.append(prov)
+
+        for prov in provider_order:
             model = os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", "").strip()
             if not model:
                 continue
-            key = self.key_pool.select_key(prov)
-            if not key:
-                continue
-            t0 = time.perf_counter()
-            try:
-                tools_arg = provider_tools.get(prov) if provider_tools else None
-                text = await self.adapters[prov].generate(
-                    prompt, system_prompt, key.secret, model, tools=tools_arg
-                )
-                self.last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
-                return {
-                    "text": text,
-                    "provider_used": prov,
-                    "model_used": model,
-                    "latency_ms": self.last_latency_ms,
-                }
-            except Exception as exc:
-                self.key_pool.record_error(key, str(exc), is_rate_limit=("429" in str(exc)))
+            max_attempts = max(1, len(self.key_pool.keys.get(prov, [])))
+            tried_key_ids: Set[str] = set()
+            for _ in range(max_attempts):
+                key = self.key_pool.select_key(prov)
+                if not key or key.key_id in tried_key_ids:
+                    break
+                tried_key_ids.add(key.key_id)
+                t0 = time.perf_counter()
+                try:
+                    tools_arg = provider_tools.get(prov) if provider_tools else None
+                    text = await self.adapters[prov].generate(
+                        prompt, system_prompt, key.secret, model, tools=tools_arg
+                    )
+                    if not isinstance(text, str) or not text.strip():
+                        raise ValueError(f"Empty or non-string narrative returned by {prov}")
+                    self.last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
+                    return {
+                        "text": text.strip(),
+                        "provider_used": prov,
+                        "model_used": model,
+                        "latency_ms": self.last_latency_ms,
+                    }
+                except Exception as exc:
+                    self.key_pool.record_error(
+                        key, str(exc), is_rate_limit=self._is_rate_limit_error(exc)
+                    )
 
         return {
-            "text": fallback_text,
+            "text": safe_fallback,
             "provider_used": "local_deterministic_orchestrator",
             "model_used": "grounded-tool-engine",
             "latency_ms": 0.4,

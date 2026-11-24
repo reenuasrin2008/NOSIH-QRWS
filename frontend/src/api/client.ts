@@ -2,8 +2,8 @@ import { ServerPayload, StrategyType } from "../types/simulation";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
   });
   if (!res.ok) {
     const txt = await res.text();
@@ -69,10 +69,18 @@ export function createSimWebSocket(
 ) {
   let ws: WebSocket | null = null;
   let closed = false;
+  let reconnectTimer: number | undefined;
+  let retryDelayMs = 1000;
+  const MAX_RETRY_MS = 15000;
+
   const connect = () => {
+    if (closed) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${window.location.host}/ws/simulation`);
-    ws.onopen = () => onStatus(true);
+    ws.onopen = () => {
+      retryDelayMs = 1000;
+      onStatus(true);
+    };
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
@@ -87,10 +95,20 @@ export function createSimWebSocket(
     };
     ws.onclose = () => {
       onStatus(false);
-      if (!closed) setTimeout(connect, 1800);
+      if (!closed) {
+        reconnectTimer = window.setTimeout(connect, retryDelayMs);
+        retryDelayMs = Math.min(MAX_RETRY_MS, retryDelayMs * 2);
+      }
     };
     ws.onerror = () => ws?.close();
   };
   connect();
-  return () => { closed = true; ws?.close(); };
+  return () => {
+    closed = true;
+    if (reconnectTimer !== undefined) {
+      window.clearTimeout(reconnectTimer);
+      reconnectTimer = undefined;
+    }
+    ws?.close();
+  };
 }

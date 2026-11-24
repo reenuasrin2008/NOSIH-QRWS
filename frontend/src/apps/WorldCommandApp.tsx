@@ -19,24 +19,27 @@ export const WorldCommandApp: React.FC = () => {
   const [wsConnected, setWsConnected] = useState(false);
   const [lastCommandBanner, setLastCommandBanner] = useState<string | null>(null);
 
-  const refresh = () => {
+  const refresh = (signal?: AbortSignal) => {
+    const fetchJson = (url: string) =>
+      fetch(url, { signal }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
     globalApi.getOverview().then(setOverview).catch(() => {});
     globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetch("/api/hospitals").then((r) => r.json()).then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
-    fetch("/api/shelters").then((r) => r.json()).then((d) => setAllShelters(d.shelters || [])).catch(() => {});
-    fetch("/api/ambulances").then((r) => r.json()).then((d) => setAllAmbulances(d.ambulances || [])).catch(() => {});
-    fetch("/api/fire-units").then((r) => r.json()).then((d) => setAllFireUnits(d.fire_units || [])).catch(() => {});
+    fetchJson("/api/hospitals").then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
+    fetchJson("/api/shelters").then((d) => setAllShelters(d.shelters || [])).catch(() => {});
+    fetchJson("/api/ambulances").then((d) => setAllAmbulances(d.ambulances || [])).catch(() => {});
+    fetchJson("/api/fire-units").then((d) => setAllFireUnits(d.fire_units || [])).catch(() => {});
     globalApi.getSwarms().then((r) => setActiveSwarms(r.swarms || [])).catch(() => {});
   };
 
   useEffect(() => {
-    refresh();
+    const ac = new AbortController();
+    refresh(ac.signal);
     const disconnect = connectGlobalWebSocket("quantum-world", {
       onConnectionChange: setWsConnected,
       onSnapshot: (snap) => {
         if (snap.overview) setOverview(snap.overview);
       },
-      onWorldEvent: () => refresh(),
+      onWorldEvent: () => refresh(ac.signal),
       onFrontendCommand: (cmd) => {
         if (cmd.command_type === "camera.focus_country" && cmd.target_id) {
           setSelectedCountryId(cmd.target_id);
@@ -49,7 +52,10 @@ export const WorldCommandApp: React.FC = () => {
         }
       },
     });
-    return disconnect;
+    return () => {
+      ac.abort();
+      disconnect();
+    };
   }, []);
 
   const selectedCountry = overview?.countries.find((c) => c.country_id === selectedCountryId);

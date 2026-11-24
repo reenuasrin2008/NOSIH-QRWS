@@ -112,6 +112,18 @@ def _resolve_refs_and_harden(schema: Dict[str, Any], defs: Dict[str, Any]) -> Di
             merged[k] = v
         node = merged
 
+    # Handle Pydantic v1 single-element allOf: [{"$ref": ...}] wrapper (for Enums / nested models with descriptions)
+    if "allOf" in node and isinstance(node["allOf"], list):
+        if len(node["allOf"]) == 1:
+            resolved = _resolve_refs_and_harden(node["allOf"][0], defs)
+            node.pop("allOf")
+            merged = dict(resolved)
+            for k, v in node.items():
+                merged[k] = v
+            node = merged
+        else:
+            node["allOf"] = [_resolve_refs_and_harden(item, defs) for item in node["allOf"]]
+
     # Handle Pydantic v2 Optional[...] -> anyOf: [{...}, {"type": "null"}]
     if "anyOf" in node and isinstance(node["anyOf"], list):
         non_null = [item for item in node["anyOf"] if not (isinstance(item, dict) and item.get("type") == "null")]
@@ -124,6 +136,9 @@ def _resolve_refs_and_harden(schema: Dict[str, Any], defs: Dict[str, Any]) -> Di
             node = merged
         else:
             node["anyOf"] = [_resolve_refs_and_harden(item, defs) for item in node["anyOf"]]
+
+    if "oneOf" in node and isinstance(node["oneOf"], list):
+        node["oneOf"] = [_resolve_refs_and_harden(item, defs) for item in node["oneOf"]]
 
     # Recurse into properties and items
     if "properties" in node and isinstance(node["properties"], dict):
@@ -147,9 +162,12 @@ def _resolve_refs_and_harden(schema: Dict[str, Any], defs: Dict[str, Any]) -> Di
 class BaseToolArgs(BaseModel):
     """Strict base model for JARVIS tool arguments (forbids unknown keys on v1 & v2)."""
 
-    class Config:
-        extra = "forbid"
-        use_enum_values = True
+    if _PYDANTIC_V2:
+        model_config = {"extra": "forbid", "use_enum_values": True}
+    else:
+        class Config:
+            extra = "forbid"
+            use_enum_values = True
 
     @classmethod
     def json_schema_dict(cls) -> Dict[str, Any]:
@@ -174,7 +192,7 @@ class BaseToolArgs(BaseModel):
 
     def to_handler_dict(self) -> Dict[str, Any]:
         """Serialize validated args to a plain dict with enum values unpacked."""
-        data = self.model_dump() if hasattr(self, "model_dump") else self.dict()
+        data = self.model_dump() if _PYDANTIC_V2 else self.dict()
         return _unpack_enums(data)
 
 

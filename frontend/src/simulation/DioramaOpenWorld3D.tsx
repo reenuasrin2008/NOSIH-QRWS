@@ -1949,7 +1949,13 @@ const DioramaWorldScene: React.FC<
 export const DioramaOpenWorld3D: React.FC<DioramaOpenWorldProps> = (props) => {
   const [timeOfDay, setTimeOfDay] = useState<"day" | "golden" | "night">("day");
   const [cameraPreset, setCameraPreset] = useState<"continent" | "country" | "street">("country");
-  const [quality, setQuality] = useState<"high" | "low">("high");
+  const urlLowQuality = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return new URLSearchParams(window.location.search).get("quality") === "low";
+  }, []);
+  const [quality, setQuality] = useState<"high" | "low">(() =>
+    urlLowQuality ? "low" : "high"
+  );
   const [prefersReducedMotion, setPrefersReducedMotion] = useState<boolean>(() => {
     if (typeof window === "undefined" || !window.matchMedia) return false;
     return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -1977,7 +1983,7 @@ export const DioramaOpenWorld3D: React.FC<DioramaOpenWorldProps> = (props) => {
       >
         <PerformanceMonitor
           onDecline={() => setQuality("low")}
-          onIncline={() => setQuality("high")}
+          onIncline={() => { if (!urlLowQuality) setQuality("high"); }}
         />
         <AdaptiveDpr pixelated />
         <DioramaWorldScene

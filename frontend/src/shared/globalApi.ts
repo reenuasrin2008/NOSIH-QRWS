@@ -102,17 +102,26 @@ export function connectGlobalWebSocket(
   let closed = false;
   let ws: WebSocket | null = null;
   let timer: number | undefined;
+  let retryDelayMs = 1000;
+  const MAX_RETRY_MS = 15000;
 
   const connect = () => {
     if (closed) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     const url = `${proto}//${window.location.host}/ws/global?client=${clientName}`;
     ws = new WebSocket(url);
-    ws.onopen = () => handlers.onConnectionChange?.(true);
+    ws.onopen = () => {
+      retryDelayMs = 1000;
+      handlers.onConnectionChange?.(true);
+    };
+    ws.onerror = () => {
+      ws?.close();
+    };
     ws.onclose = () => {
       handlers.onConnectionChange?.(false);
       if (!closed) {
-        timer = window.setTimeout(connect, 2000);
+        timer = window.setTimeout(connect, retryDelayMs);
+        retryDelayMs = Math.min(MAX_RETRY_MS, retryDelayMs * 2);
       }
     };
     ws.onmessage = (ev) => {

@@ -1,4 +1,5 @@
 from __future__ import annotations
+import math
 import time
 import uuid
 from datetime import datetime, timezone
@@ -70,7 +71,9 @@ def solve_classical(
                 continue
             if d.battery_percent < 24.0:
                 continue
-            feasible_pairs[(di, ti)] = estimate_assignment_cost(d, task, city, sim_time_s)
+            cost = estimate_assignment_cost(d, task, city, sim_time_s)
+            if math.isfinite(cost):
+                feasible_pairs[(di, ti)] = cost
 
     unassigned_penalty = 950.0
     total_obj = 0.0
@@ -94,12 +97,13 @@ def solve_classical(
 
         prio_pen = {"critical": 4200, "high": 2800, "medium": 1600, "low": 900}
         obj_terms = [int(cost * 10) * x[(di, ti)] for (di, ti), cost in feasible_pairs.items()]
-        obj_terms.extend(prio_pen[task.priority.value] * unassigned[ti] for ti, task in enumerate(pending))
+        obj_terms.extend(prio_pen.get(task.priority.value, 1600) * unassigned[ti] for ti, task in enumerate(pending))
         model.Minimize(sum(obj_terms))
 
         solver = cp_model.CpSolver()
         solver.parameters.max_time_in_seconds = 1.8
-        solver.parameters.num_search_workers = 4
+        solver.parameters.num_search_workers = 1
+        solver.parameters.random_seed = 42
         status = solver.Solve(model)
 
         if status in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -148,6 +152,8 @@ def solve_classical(
                         total_obj += feasible_pairs[(di, c)]
                         assigned_tasks.add(c)
             missed = len(pending) - len(assigned_tasks)
+        else:
+            missed = len(pending)
 
     for did, tids in assignments.items():
         if did in drones and len(tids) > 1:

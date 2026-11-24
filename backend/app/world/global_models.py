@@ -23,12 +23,14 @@ def geo_to_local(point: GeoPoint, origin: GeoPoint) -> Tuple[float, float, float
 def local_to_geo(x: float, y: float, z: float, origin: GeoPoint) -> GeoPoint:
     m_per_deg_lat = 111320.0
     m_per_deg_lon = 111320.0 * max(0.1, math.cos(math.radians(origin.lat)))
-    lat = origin.lat - (z / m_per_deg_lat)
-    lon = origin.lon + (x / m_per_deg_lon)
+    lat = max(-90.0, min(90.0, origin.lat - (z / m_per_deg_lat)))
+    lon = max(-180.0, min(180.0, origin.lon + (x / m_per_deg_lon)))
     return GeoPoint(lat=round(lat, 6), lon=round(lon, 6), elevation_m=round(y, 2))
 
 
 def haversine_km(a: GeoPoint, b: GeoPoint) -> float:
+    if not all(math.isfinite(v) for v in (a.lat, a.lon, b.lat, b.lon)):
+        return 0.0
     r = 6371.0
     dlat = math.radians(b.lat - a.lat)
     dlon = math.radians(b.lon - a.lon)
@@ -36,7 +38,8 @@ def haversine_km(a: GeoPoint, b: GeoPoint) -> float:
         math.sin(dlat / 2) ** 2
         + math.cos(math.radians(a.lat)) * math.cos(math.radians(b.lat)) * math.sin(dlon / 2) ** 2
     )
-    return 2.0 * r * math.asin(min(1.0, math.sqrt(h)))
+    h = max(0.0, min(1.0, h))
+    return 2.0 * r * math.asin(math.sqrt(h))
 
 
 class SimulationMode(str, Enum):

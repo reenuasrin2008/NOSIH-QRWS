@@ -11,8 +11,8 @@ from app.simulation.battery_model import compute_route_energy_wh
 class SpatialAirspaceGrid:
     def __init__(self, city: CityEnvironment, cell_size: float = CONFIG.grid_cell_size):
         self.city = city
-        self.cell_size = cell_size
-        self.grid_n = int(city.world_size // cell_size)
+        self.cell_size = max(1.0, float(cell_size))
+        self.grid_n = max(1, int(city.world_size // self.cell_size))
         self.obstacle_height: Dict[Tuple[int, int], float] = {}
         self.risk_map: Dict[Tuple[int, int], float] = {}
         self.hard_blocked: set[Tuple[int, int]] = set()
@@ -141,11 +141,15 @@ class SpatialAirspaceGrid:
         open_heap: List[Tuple[float, Tuple[int, int]]] = [(0.0, sg)]
         came_from: Dict[Tuple[int, int], Tuple[int, int]] = {}
         g_score: Dict[Tuple[int, int], float] = {sg: 0.0}
+        closed: set[Tuple[int, int]] = set()
         neighbors = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)]
 
         found = False
         while open_heap:
             _, current = heapq.heappop(open_heap)
+            if current in closed:
+                continue
+            closed.add(current)
             if current == gg:
                 found = True
                 break

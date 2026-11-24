@@ -67,5 +67,5 @@ def estimate_assignment_cost(
     )
     slack = max(0.0, (task.deadline_seconds - sim_time_s) - flight_time)
     deadline_pen = 0.0 if slack > 0 else 180.0
-    prio_mult = {"critical": 0.65, "high": 0.85, "medium": 1.0, "low": 1.25}[task.priority.value]
+    prio_mult = {"critical": 0.65, "high": 0.85, "medium": 1.0, "low": 1.25}.get(task.priority.value, 1.0)
     return round((flight_time * 0.55 + energy * 0.45 + task.risk_level * 40.0 + deadline_pen) * prio_mult, 3)

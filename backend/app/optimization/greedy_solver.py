@@ -28,7 +28,7 @@ def solve_greedy(
         t for t in tasks.values()
         if t.status in (TaskStatus.PENDING, TaskStatus.REQUIRES_REASSIGNMENT, TaskStatus.UNASSIGNED)
     ]
-    pending.sort(key=lambda t: (PRIORITY_ORDER[t.priority.value], t.deadline_seconds, t.id))
+    pending.sort(key=lambda t: (PRIORITY_ORDER.get(t.priority.value, 2), t.deadline_seconds, t.id))
 
     eligible_drones = [
         d for d in drones.values()
@@ -63,7 +63,9 @@ def solve_greedy(
         if best_drone is not None:
             assignments[best_drone.id].append(task.id)
             drone_load[best_drone.id] += 1
-            total_obj += estimate_assignment_cost(best_drone, task, city, sim_time_s)
+            cost = estimate_assignment_cost(best_drone, task, city, sim_time_s)
+            if math.isfinite(cost):
+                total_obj += cost
         else:
             missed += 1
 

@@ -25,8 +25,9 @@ OBJECTIVE_WEIGHTS: Dict[str, Tuple[float, float, float]] = {
 class AdvancedRouteExplorer:
     """Multi-objective & Yen's K-shortest loopless 3D drone route exploration engine."""
 
-    def __init__(self, world: GlobalWorldEngine) -> None:
+    def __init__(self, world: GlobalWorldEngine, max_logs: int = 500) -> None:
         self.world = world
+        self._max_logs = max(1, max_logs)
         self.route_logs: List[Dict[str, Any]] = []
         self.observations: List[Dict[str, Any]] = []
 
@@ -38,10 +39,11 @@ class AdvancedRouteExplorer:
         grid_n: int = 5,
     ) -> Tuple[Dict[str, GeoPoint], Dict[str, List[Tuple[str, float, float]]]]:
         """Build a 2.5D/3D waypoint lattice spanning origin->destination with hazard risk costs."""
-        lat_min = min(origin.lat, destination.lat) - 0.04
-        lat_max = max(origin.lat, destination.lat) + 0.04
-        lon_min = min(origin.lon, destination.lon) - 0.04
-        lon_max = max(origin.lon, destination.lon) + 0.04
+        grid_n = max(2, grid_n)
+        lat_min = max(-85.0, min(origin.lat, destination.lat) - 0.04)
+        lat_max = min(85.0, max(origin.lat, destination.lat) + 0.04)
+        lon_min = max(-180.0, min(origin.lon, destination.lon) - 0.04)
+        lon_max = min(180.0, max(origin.lon, destination.lon) + 0.04)
 
         nodes: Dict[str, GeoPoint] = {"START": origin, "GOAL": destination}
         for r in range(grid_n):
@@ -98,6 +100,9 @@ class AdvancedRouteExplorer:
         banned_edges: Optional[set] = None,
         banned_nodes: Optional[set] = None,
     ) -> Tuple[List[str], int]:
+        if not adj or start not in adj or goal not in adj:
+            return [], 0
+        risk_weight = max(0.0, float(risk_weight)) if math.isfinite(risk_weight) else 0.0
         banned_edges = banned_edges or set()
         banned_nodes = banned_nodes or set()
         pq: List[Tuple[float, str]] = [(0.0, start)]
@@ -141,6 +146,8 @@ class AdvancedRouteExplorer:
         risk_weight: float = 0.5,
     ) -> Tuple[List[List[str]], int]:
         """Yen's K-shortest loopless path algorithm for diverse candidate route generation."""
+        if k <= 0 or not adj:
+            return [], 0
         first, total_eval = self._dijkstra(adj, start, goal, risk_weight=risk_weight)
         if not first:
             return [], total_eval
@@ -150,7 +157,7 @@ class AdvancedRouteExplorer:
         def path_cost(p: List[str]) -> float:
             total = 0.0
             for i in range(len(p) - 1):
-                for v, d_km, rsk in adj[p[i]]:
+                for v, d_km, rsk in adj.get(p[i], []):
                     if v == p[i + 1]:
                         total += d_km * (1.0 + risk_weight * rsk * 3.2)
                         break
@@ -163,7 +170,7 @@ class AdvancedRouteExplorer:
                 root_path = last_path[: i + 1]
                 banned_edges = set()
                 for p in A:
-                    if len(p) > i and p[: i + 1] == root_path:
+                    if len(p) > i + 1 and p[: i + 1] == root_path:
                         banned_edges.add((p[i], p[i + 1]))
                 banned_nodes = set(root_path[:-1])
                 spur_path, ev = self._dijkstra(
@@ -211,6 +218,8 @@ class AdvancedRouteExplorer:
         if drone_id not in self.world.drones:
             raise ValueError(f"Unknown drone_id: {drone_id}")
         drone = self.world.drones[drone_id]
+        k_candidates = max(1, min(20, int(k_candidates)))
+        payload_kg = max(0.0, float(payload_kg)) if math.isfinite(payload_kg) else 0.0
         obj = objective.upper() if objective.upper() in OBJECTIVE_WEIGHTS else "BALANCED"
         tw, ew, rw = OBJECTIVE_WEIGHTS[obj]
 
@@ -305,6 +314,8 @@ class AdvancedRouteExplorer:
             "selected_route_id": candidates[0].route_id if candidates else None,
         }
         self.route_logs.append(log_rec)
+        if len(self.route_logs) > self._max_logs:
+            del self.route_logs[:-self._max_logs]
         return {
             "request_id": req_id,
             "drone_id": drone_id,
@@ -336,7 +347,7 @@ class AdvancedRouteExplorer:
 
         comparison_rows: List[Dict[str, Any]] = []
         all_candidates: List[Dict[str, Any]] = []
-        for d in eligible[:max_drones]:
+        for d in eligible[:max(1, max_drones)]:
             res = self.explore_routes_for_drone(d.drone_id, destination, objective=objective, k_candidates=3, payload_kg=payload_kg)
             if res["candidates"]:
                 best = res["candidates"][0]

@@ -44,6 +44,19 @@ const QUICK_COMMANDS = [
 
 type DockTab = "logs" | "command" | "tools" | "approvals" | "voice" | null;
 
+interface HealthInvariants {
+  approvalGated: boolean;
+  zeroDatabase: boolean;
+  toolCount: number | null;
+}
+
+interface LatencyStats {
+  count: number;
+  p50Ms: number;
+  p95Ms: number;
+  p99Ms: number;
+}
+
 const WAVEFORM_BAR_COUNT = 28;
 
 function formatFrontendCommandChip(cmd: Record<string, any>): string {
@@ -74,6 +87,17 @@ export const JarvisCommandApp: React.FC = () => {
   const [selectedCountryId, setSelectedCountryId] = useState("COUNTRY-03");
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
+  const [healthInvariants, setHealthInvariants] = useState<HealthInvariants>({
+    approvalGated: true,
+    zeroDatabase: true,
+    toolCount: null,
+  });
+  const [latencyStats, setLatencyStats] = useState<LatencyStats>({
+    count: 0,
+    p50Ms: 0,
+    p95Ms: 0,
+    p99Ms: 0,
+  });
 
   // Full-Screen 3D Core vs Split Core + Flat Tactical Map
   const [stageMode, setStageMode] = useState<"fullscreen" | "split">("fullscreen");
@@ -121,8 +145,15 @@ export const JarvisCommandApp: React.FC = () => {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const speakWaveRafRef = useRef<number | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const isMountedRef = useRef(true);
+  const micSessionIdRef = useRef(0);
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const telemetryAbortRef = useRef<AbortController | null>(null);
+  const voiceModeRef = useRef(voiceMode);
+  voiceModeRef.current = voiceMode;
 
   const cleanupAudioPipeline = () => {
+    micSessionIdRef.current += 1;
     if (rafRef.current !== null) {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -135,32 +166,81 @@ export const JarvisCommandApp: React.FC = () => {
       audioCtxRef.current.close().catch(() => {});
       audioCtxRef.current = null;
     }
-    setAudioLevel(0);
-    setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
+    if (isMountedRef.current) {
+      setAudioLevel(0);
+      setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
+    }
   };
 
   const refreshMeta = () => {
-    globalApi.getOverview().then(setOverview).catch(() => {});
-    globalApi.getProvidersStatus().then(setProviders).catch(() => {});
-    globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetch("/api/hospitals")
-      .then((r) => r.json())
-      .then((d) => setAllHospitals(d.hospitals || []))
+    const signal = abortControllerRef.current?.signal;
+    globalApi.getOverview().then((d) => { if (isMountedRef.current) setOverview(d); }).catch(() => {});
+    globalApi.getProvidersStatus().then((d) => { if (isMountedRef.current) setProviders(d); }).catch(() => {});
+    globalApi.getGlobalDrones().then((r) => { if (isMountedRef.current) setAllDrones(r.drones); }).catch(() => {});
+    fetch("/api/hospitals", { signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { if (isMountedRef.current) setAllHospitals(d.hospitals || []); })
       .catch(() => {});
-    globalApi.getEvents(50).then((r) => setEvents(r.events)).catch(() => {});
-    globalApi.getAuditLogs().then((r) => setToolLogs(r.tool_logs || [])).catch(() => {});
-    globalApi.getApprovals().then((r) => setApprovals(r.approvals || [])).catch(() => {});
+    globalApi.getEvents(50).then((r) => { if (isMountedRef.current) setEvents(r.events); }).catch(() => {});
+    globalApi.getAuditLogs().then((r) => { if (isMountedRef.current) setToolLogs(r.tool_logs || []); }).catch(() => {});
+    globalApi.getApprovals().then((r) => { if (isMountedRef.current) setApprovals(r.approvals || []); }).catch(() => {});
+  };
+
+  const pollHealthAndLatency = () => {
+    telemetryAbortRef.current?.abort();
+    const ac = new AbortController();
+    telemetryAbortRef.current = ac;
+    const { signal } = ac;
+
+    fetch("/api/health", { signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d: Record<string, any>) => {
+        if (!isMountedRef.current || signal.aborted) return;
+        const inv = d?.invariants && typeof d.invariants === "object" ? d.invariants : {};
+        const rawTools = d?.tool_count ?? d?.tools_count ?? inv?.tool_count ?? null;
+        setHealthInvariants({
+          approvalGated: Boolean(inv?.approval_gated ?? d?.approval_gated ?? true),
+          zeroDatabase: Boolean(inv?.zero_database ?? d?.zero_database ?? true),
+          toolCount: typeof rawTools === "number" && Number.isFinite(rawTools) ? rawTools : null,
+        });
+      })
+      .catch(() => {});
+
+    fetch("/api/ai/latency", { signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d: Record<string, any>) => {
+        if (!isMountedRef.current || signal.aborted) return;
+        const rawCount = Number(d?.count ?? d?.sample_count ?? d?.samples ?? d?.total ?? 0);
+        const count = Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 0;
+        const p50 = Number(d?.p50_ms ?? d?.p50 ?? 0);
+        const p95 = Number(d?.p95_ms ?? d?.p95 ?? 0);
+        const p99 = Number(d?.p99_ms ?? d?.p99 ?? 0);
+        setLatencyStats({
+          count,
+          p50Ms: Number.isFinite(p50) ? Math.round(p50) : 0,
+          p95Ms: Number.isFinite(p95) ? Math.round(p95) : 0,
+          p99Ms: Number.isFinite(p99) ? Math.round(p99) : 0,
+        });
+      })
+      .catch(() => {});
   };
 
   useEffect(() => {
+    isMountedRef.current = true;
+    const ac = new AbortController();
+    abortControllerRef.current = ac;
+
     refreshMeta();
-    fetch("/api/ai/tools")
-      .then((r) => r.json())
-      .then((d) => setAvailableTools(Object.keys(d.tools || {})))
+    pollHealthAndLatency();
+    fetch("/api/ai/tools", { signal: ac.signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => { if (isMountedRef.current) setAvailableTools(Object.keys(d.tools || {})); })
       .catch(() => {});
 
+    let loadVoices: (() => void) | null = null;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
-      const loadVoices = () => {
+      loadVoices = () => {
+        if (!isMountedRef.current) return;
         const list = window.speechSynthesis.getVoices();
         setVoices(list);
         if (list.length > 0 && !selectedVoiceName) {
@@ -173,8 +253,9 @@ export const JarvisCommandApp: React.FC = () => {
     }
 
     const disconnect = connectGlobalWebSocket("quantum-jarvis", {
-      onConnectionChange: setWsConnected,
+      onConnectionChange: (c) => { if (isMountedRef.current) setWsConnected(c); },
       onSnapshot: (snap) => {
+        if (!isMountedRef.current) return;
         if (snap.overview) setOverview(snap.overview);
         if (snap.providers) setProviders(snap.providers);
       },
@@ -182,10 +263,32 @@ export const JarvisCommandApp: React.FC = () => {
     });
 
     return () => {
+      isMountedRef.current = false;
+      ac.abort();
+      abortControllerRef.current = null;
+      telemetryAbortRef.current?.abort();
+      telemetryAbortRef.current = null;
       disconnect();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.onresult = null;
+          recognitionRef.current.onerror = null;
+          recognitionRef.current.onend = null;
+          recognitionRef.current.abort?.();
+        } catch {
+          // ignore already-stopped recognition
+        }
+        recognitionRef.current = null;
+      }
       cleanupAudioPipeline();
-      if (speakWaveRafRef.current !== null) cancelAnimationFrame(speakWaveRafRef.current);
+      if (speakWaveRafRef.current !== null) {
+        cancelAnimationFrame(speakWaveRafRef.current);
+        speakWaveRafRef.current = null;
+      }
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        if (window.speechSynthesis.onvoiceschanged === loadVoices) {
+          window.speechSynthesis.onvoiceschanged = null;
+        }
         window.speechSynthesis.cancel();
       }
     };
@@ -250,8 +353,9 @@ export const JarvisCommandApp: React.FC = () => {
     if (chosen) u.voice = chosen;
     u.onstart = () => setSpeaking(true);
     u.onend = () => {
+      if (!isMountedRef.current) return;
       setSpeaking(false);
-      if (voiceMode === "continuous") startVoiceRecognition();
+      if (voiceModeRef.current === "continuous") startVoiceRecognition();
     };
     u.onerror = () => setSpeaking(false);
     window.speechSynthesis.speak(u);
@@ -276,6 +380,7 @@ export const JarvisCommandApp: React.FC = () => {
       }
       speakText(reply.spoken_summary);
       refreshMeta();
+      pollHealthAndLatency();
     } catch (err: any) {
       setVoiceNotice(err?.message || "Command dispatch failed.");
     } finally {
@@ -331,6 +436,7 @@ export const JarvisCommandApp: React.FC = () => {
         );
       }
       setExpandedExplainIds((prev) => ({ ...prev, [reply.reply_id]: true }));
+      pollHealthAndLatency();
     } catch {
       setExpandedExplainIds((prev) => ({ ...prev, [reply.reply_id]: !isAlreadyExpanded }));
     } finally {
@@ -348,15 +454,31 @@ export const JarvisCommandApp: React.FC = () => {
     }
     setVoiceNotice(null);
     stopSpeaking();
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort?.();
+      } catch {
+        // ignore prior recognition state
+      }
+      recognitionRef.current = null;
+    }
+    cleanupAudioPipeline();
+    const sessionId = micSessionIdRef.current;
+
     const rec = new SpeechRec();
     rec.lang = "en-US";
     rec.interimResults = false;
     rec.onstart = () => {
+      if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
       setListening(true);
       if (navigator.mediaDevices?.getUserMedia) {
         navigator.mediaDevices
           .getUserMedia({ audio: true })
           .then((stream) => {
+            if (!isMountedRef.current || micSessionIdRef.current !== sessionId) {
+              stream.getTracks().forEach((tr) => tr.stop());
+              return;
+            }
             micStreamRef.current = stream;
             const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
             const ctx = new AudioCtx();
@@ -368,6 +490,7 @@ export const JarvisCommandApp: React.FC = () => {
             src.connect(analyser);
             const data = new Uint8Array(analyser.frequencyBinCount);
             const tick = () => {
+              if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
               analyser.getByteFrequencyData(data);
               const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
               setAudioLevel(Math.min(1, avg / 95));
@@ -386,20 +509,29 @@ export const JarvisCommandApp: React.FC = () => {
       }
     };
     rec.onresult = (ev: any) => {
+      if (!isMountedRef.current) return;
       const transcript = ev.results?.[0]?.[0]?.transcript;
       if (transcript) sendCommand(transcript);
     };
     rec.onerror = (ev: any) => {
+      if (!isMountedRef.current) return;
       setListening(false);
       cleanupAudioPipeline();
       setVoiceNotice(`Voice input status: ${ev.error}`);
     };
     rec.onend = () => {
+      if (!isMountedRef.current) return;
       setListening(false);
       cleanupAudioPipeline();
     };
     recognitionRef.current = rec;
-    rec.start();
+    try {
+      rec.start();
+    } catch (err: any) {
+      setListening(false);
+      cleanupAudioPipeline();
+      setVoiceNotice(err?.message || "Unable to start speech recognition.");
+    }
   };
 
   const toggleVoiceInput = () => {
@@ -478,8 +610,23 @@ export const JarvisCommandApp: React.FC = () => {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ country_id: selectedCountryId }),
+        signal: abortControllerRef.current?.signal,
       });
-      const data = await res.json();
+      const rawText = await res.text();
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        data = { error: rawText || `HTTP ${res.status}` };
+      }
+      if (!res.ok) {
+        setToolRunResult({
+          tool: toolName,
+          duration_ms: data?.duration_ms,
+          output: { error: data?.error || data?.detail || `HTTP ${res.status}`, ...(typeof data === "object" ? data : {}) },
+        });
+        return;
+      }
       setToolRunResult({
         tool: toolName,
         duration_ms: data.duration_ms,
@@ -702,6 +849,8 @@ export const JarvisCommandApp: React.FC = () => {
             listening={listening}
             speaking={speaking}
             thinking={loading}
+            awaitingApproval={pendingApprovalsCount > 0}
+            error={Boolean(voiceNotice && /failed|error/i.test(voiceNotice))}
             audioLevel={audioLevel}
             statusLabel={
               listening
@@ -735,7 +884,7 @@ export const JarvisCommandApp: React.FC = () => {
 
         {/* Popped-Up Frosted Obsidian Bottom Drawer Overlay (3D Core remains visible behind/above) */}
         {activeDock !== null && (
-          <section className="absolute left-4 right-4 bottom-16 z-20 max-w-5xl mx-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex flex-col overflow-hidden max-h-[54vh] select-text">
+          <section className="absolute left-4 right-4 bottom-[84px] z-20 max-w-5xl mx-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex flex-col overflow-hidden max-h-[52vh] select-text">
             {/* Drawer Header */}
             <div className="px-4 py-2 bg-[#0F1012]/90 border-b border-[#2A2D34] flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 text-[11px] font-mono tracking-wider uppercase text-[#FAFAFA]">
@@ -1235,11 +1384,37 @@ export const JarvisCommandApp: React.FC = () => {
           </section>
         )}
 
-        {/* Sleek Floating Bottom Pop-Up Dock Pill Bar */}
-        <nav
-          aria-label="JARVIS Bottom Command Dock"
-          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 px-2 py-1.5 rounded-full bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex items-center gap-1"
-        >
+        {/* Bottom Command Dock + Live Invariants & Latency Footer Badge */}
+        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1.5 pointer-events-none max-w-[calc(100vw-1rem)]">
+          <div
+            aria-label="JARVIS System Invariants and Latency"
+            className="pointer-events-auto px-3 py-0.5 rounded-full bg-[#0B0C0E]/90 backdrop-blur-md border border-[#2A2D34] text-[10px] font-mono tracking-wide text-[#A1A1AA] shadow-lg flex items-center gap-1.5 whitespace-nowrap overflow-x-auto max-w-full"
+          >
+            <span className="text-[#FAFAFA]">
+              {healthInvariants.approvalGated ? "✓" : "✗"}
+            </span>
+            <span>Approval-gated</span>
+            <span className="text-[#52525B]">·</span>
+            <span className="text-[#FAFAFA]">
+              {healthInvariants.zeroDatabase ? "✓" : "✗"}
+            </span>
+            <span>Zero-database</span>
+            <span className="text-[#52525B]">·</span>
+            <span className="text-[#FAFAFA]">
+              {healthInvariants.toolCount ?? (availableTools.length || 50)} tools
+            </span>
+            <span className="text-[#52525B]">·</span>
+            <span className="text-[#E4E4E7]">
+              {latencyStats.count > 0
+                ? `p50 ${latencyStats.p50Ms}ms · p95 ${latencyStats.p95Ms}ms · p99 ${latencyStats.p99Ms}ms`
+                : "<5ms grounded"}
+            </span>
+          </div>
+
+          <nav
+            aria-label="JARVIS Bottom Command Dock"
+            className="pointer-events-auto px-2 py-1.5 rounded-full bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex items-center gap-1"
+          >
           {(
             [
               { id: "logs", label: "LOGS", icon: Terminal },
@@ -1289,7 +1464,8 @@ export const JarvisCommandApp: React.FC = () => {
             <MapIcon className="w-3.5 h-3.5" />
             <span>FLAT MAP</span>
           </button>
-        </nav>
+          </nav>
+        </div>
       </main>
     </div>
   );

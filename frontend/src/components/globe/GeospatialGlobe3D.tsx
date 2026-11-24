@@ -1,4 +1,4 @@
-import React, { useMemo, useRef } from "react";
+import React, { useEffect, useMemo, useRef } from "react";
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { Html, Line, OrbitControls, Stars } from "@react-three/drei";
 import * as THREE from "three";
@@ -98,6 +98,16 @@ const GlobeCore: React.FC<GlobeSceneProps> = ({
       }),
     []
   );
+
+  useEffect(() => {
+    return () => {
+      textures.albedoMap.dispose();
+      textures.bumpMap.dispose();
+      textures.roughnessMap.dispose();
+      textures.cloudsMap.dispose();
+      atmosphereMat.dispose();
+    };
+  }, [textures, atmosphereMat]);
 
   const selectedCountry = countries.find((c) => c.country_id === selectedCountryId);
 

@@ -1,12 +1,12 @@
 from __future__ import annotations
 import logging
 import uuid
-
-logger = logging.getLogger(__name__)
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 from pydantic import BaseModel, Field
 from app.core.compat import to_dict, utc_now_iso
+
+logger = logging.getLogger(__name__)
 
 
 class WorldEvent(BaseModel):
@@ -39,7 +39,7 @@ class AuthoritativeEventBus:
     def __init__(self, max_history: int = 5000) -> None:
         self.world_version: int = 1
         self.simulation_id: str = "GLOBAL_DISASTER_7NATIONS_001"
-        self._events: Deque[WorldEvent] = deque(maxlen=max_history)
+        self._events: Deque[WorldEvent] = deque(maxlen=max(1, max_history))
         self._seen_ids: Set[str] = set()
         self._commands: Deque[FrontendCommand] = deque(maxlen=1000)
         self._connected_frontends: Dict[str, int] = {
@@ -63,7 +63,8 @@ class AuthoritativeEventBus:
         }
 
     def subscribe(self, callback: Callable[[Dict[str, Any]], None]) -> None:
-        self._subscribers.append(callback)
+        if callback not in self._subscribers:
+            self._subscribers.append(callback)
 
     def emit(
         self,
@@ -94,10 +95,13 @@ class AuthoritativeEventBus:
             category=category,
             payload=payload or {},
         )
+        if self._events.maxlen is not None and len(self._events) >= self._events.maxlen:
+            evicted = self._events[0]
+            self._seen_ids.discard(evicted.event_id)
         self._seen_ids.add(eid)
         self._events.append(ev)
         msg = {"type": "world_event", "event": to_dict(ev)}
-        for cb in self._subscribers:
+        for cb in list(self._subscribers):
             try:
                 cb(msg)
             except Exception as exc:
@@ -131,7 +135,7 @@ class AuthoritativeEventBus:
             bump_version=False,
         )
         msg = {"type": "frontend_command", "command": to_dict(cmd)}
-        for cb in self._subscribers:
+        for cb in list(self._subscribers):
             try:
                 cb(msg)
             except Exception as exc:
@@ -155,6 +159,8 @@ class AuthoritativeEventBus:
         event_type_prefix: Optional[str] = None,
         since_version: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
         results: List[Dict[str, Any]] = []
         for ev in reversed(self._events):
             if since_version is not None and ev.world_version <= since_version:
@@ -171,4 +177,6 @@ class AuthoritativeEventBus:
         return results
 
     def get_commands(self, limit: int = 50) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
         return [to_dict(c) for c in list(self._commands)[-limit:]]

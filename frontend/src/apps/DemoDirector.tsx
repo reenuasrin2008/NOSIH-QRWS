@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import {
+  AlertTriangle,
   CheckCircle2,
   ChevronDown,
   ChevronUp,
@@ -10,7 +11,6 @@ import {
   Loader2,
   X,
 } from "lucide-react";
-import { globalApi } from "../shared/globalApi";
 
 interface DemoStepResult {
   id: string;
@@ -18,9 +18,15 @@ interface DemoStepResult {
   detail: string;
 }
 
+interface DemoToast {
+  title: string;
+  body: string;
+  isError?: boolean;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function callAiTool(toolName: string, args: Record<string, any>): Promise<any> {
+async function callAiTool(toolName: string, args: Record<string, unknown>): Promise<any> {
   const res = await fetch(`/api/ai/tools/${toolName}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -30,7 +36,42 @@ async function callAiTool(toolName: string, args: Record<string, any>): Promise<
     const text = await res.text();
     throw new Error(text || `HTTP ${res.status}`);
   }
-  return res.json();
+  const data = await res.json();
+  if (
+    data?.status === "ERROR" ||
+    data?.result?.status === "ERROR" ||
+    data?.error
+  ) {
+    throw new Error(
+      data?.error ||
+        data?.message ||
+        data?.result?.error ||
+        data?.result?.message ||
+        `Tool ${toolName} returned status ERROR`
+    );
+  }
+  return data;
+}
+
+async function approveDemoOperation(approvalId: string): Promise<any> {
+  const res = await fetch(`/api/approvals/${approvalId}/approve`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ auto_execute: true }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || `HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  if (data?.status === "ERROR" || data?.execution_result?.status === "ERROR") {
+    throw new Error(
+      data?.error ||
+        data?.execution_result?.error ||
+        `Approval ${approvalId} returned status ERROR`
+    );
+  }
+  return data;
 }
 
 export const DemoDirector: React.FC = () => {
@@ -45,7 +86,7 @@ export const DemoDirector: React.FC = () => {
   const [collapsed, setCollapsed] = useState(true);
   const [runningScenario, setRunningScenario] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState<string | null>(null);
-  const [toast, setToast] = useState<{ title: string; body: string } | null>(null);
+  const [toast, setToast] = useState<DemoToast | null>(null);
   const [history, setHistory] = useState<DemoStepResult[]>([]);
 
   if (!isEnabled) return null;
@@ -79,7 +120,7 @@ export const DemoDirector: React.FC = () => {
       pushHistory("Typhoon Prepared", `Approval ${approvalId} (CYCLONE · COUNTRY-03)`);
       await sleep(1500);
 
-      await globalApi.approveOperation(approvalId, true);
+      await approveDemoOperation(approvalId);
       setStatusLine(`Approval ${approvalId} executed · Prepping SURVIVOR_SEARCH swarm + ambulances...`);
 
       const [swarmPrep, ambPrep] = await Promise.all([
@@ -105,10 +146,10 @@ export const DemoDirector: React.FC = () => {
         title: "Typhoon hits Veridia — Response Queued",
         body: summary,
       });
-    } catch (err: any) {
-      const msg = err?.message || "Typhoon scenario failed.";
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Typhoon scenario failed.";
       setStatusLine(`Error: ${msg}`);
-      setToast({ title: "Demo Error", body: msg });
+      setToast({ title: "Demo Error", body: msg, isError: true });
     } finally {
       setRunningScenario(null);
     }
@@ -120,19 +161,24 @@ export const DemoDirector: React.FC = () => {
     setToast(null);
     try {
       setStatusLine("Selecting eligible active drone for failure injection...");
-      let dronesRes = await globalApi.getGlobalDrones("COUNTRY-03");
-      let candidates = (dronesRes.drones || []).filter(
-        (d: any) => (d.status || "").toUpperCase() !== "DESTROYED"
-      );
-      if (candidates.length === 0) {
-        dronesRes = await globalApi.getGlobalDrones();
-        candidates = (dronesRes.drones || []).filter(
-          (d: any) => (d.status || "").toUpperCase() !== "DESTROYED"
+      let targetDroneId = "D-03-01";
+      let targetCountryId = "COUNTRY-03";
+      try {
+        const fleetScan = await callAiTool("get_drone_fleet", {
+          country_id: "COUNTRY-03",
+        });
+        const list: Array<{ drone_id?: string; country_id?: string; status?: string }> =
+          fleetScan?.result?.drones || fleetScan?.drones || [];
+        const eligible = list.find(
+          (d) => (d.status || "").toUpperCase() !== "DESTROYED"
         );
+        if (eligible?.drone_id) {
+          targetDroneId = eligible.drone_id;
+          targetCountryId = eligible.country_id || "COUNTRY-03";
+        }
+      } catch {
+        // Fallback to default active Veridia drone if fleet listing tool is unavailable
       }
-      const chosen = candidates[0];
-      const targetDroneId = chosen?.drone_id || "D-03-01";
-      const targetCountryId = chosen?.country_id || "COUNTRY-03";
 
       const prep = await callAiTool("prepare_drone_failure", {
         country_id: targetCountryId,
@@ -150,12 +196,12 @@ export const DemoDirector: React.FC = () => {
       pushHistory("Drone Failure Prepped", `${targetDroneId} · ${approvalId}`);
       await sleep(1500);
 
-      const executed = await globalApi.approveOperation(approvalId, true);
+      const executed = await approveDemoOperation(approvalId);
       const recoveryNote =
         executed?.execution_result?.recovery_summary ||
-        executed?.execution_result?.replacement_drone_id
+        (executed?.execution_result?.replacement_drone_id
           ? `Replacement ${executed.execution_result.replacement_drone_id} reassigned automatically.`
-          : `Swarm auto-recovery completed for ${targetDroneId} (${targetCountryId}).`;
+          : `Swarm auto-recovery completed for ${targetDroneId} (${targetCountryId}).`);
 
       setStatusLine(recoveryNote);
       pushHistory("Auto-Recovery Complete", recoveryNote);
@@ -163,10 +209,10 @@ export const DemoDirector: React.FC = () => {
         title: `Drone Down → Auto-Recovery (${targetDroneId})`,
         body: recoveryNote,
       });
-    } catch (err: any) {
-      const msg = err?.message || "Drone recovery scenario failed.";
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Drone recovery scenario failed.";
       setStatusLine(`Error: ${msg}`);
-      setToast({ title: "Demo Error", body: msg });
+      setToast({ title: "Demo Error", body: msg, isError: true });
     } finally {
       setRunningScenario(null);
     }
@@ -211,10 +257,10 @@ export const DemoDirector: React.FC = () => {
         title: "Cross-Country Mutual Aid Ready",
         body: summary,
       });
-    } catch (err: any) {
-      const msg = err?.message || "Mutual aid scenario failed.";
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Mutual aid scenario failed.";
       setStatusLine(`Error: ${msg}`);
-      setToast({ title: "Demo Error", body: msg });
+      setToast({ title: "Demo Error", body: msg, isError: true });
     } finally {
       setRunningScenario(null);
     }
@@ -224,10 +270,19 @@ export const DemoDirector: React.FC = () => {
     <>
       {/* Recovery / Scenario Toast Notification */}
       {toast && (
-        <div className="fixed top-14 right-4 z-[60] max-w-sm rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/20 shadow-2xl p-3 text-[#FAFAFA] font-sans">
+        <div
+          role={toast.isError ? "alert" : "status"}
+          className={`fixed top-14 right-4 z-[60] max-w-sm rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl shadow-2xl p-3 text-[#FAFAFA] font-sans border ${
+            toast.isError ? "border-red-500/60" : "border-white/20"
+          }`}
+        >
           <div className="flex items-start justify-between gap-2">
             <div className="flex items-center gap-1.5 text-xs font-semibold text-[#FAFAFA]">
-              <CheckCircle2 className="w-3.5 h-3.5 text-[#FAFAFA] shrink-0" />
+              {toast.isError ? (
+                <AlertTriangle className="w-3.5 h-3.5 text-red-400 shrink-0" />
+              ) : (
+                <CheckCircle2 className="w-3.5 h-3.5 text-[#FAFAFA] shrink-0" />
+              )}
               <span>{toast.title}</span>
             </div>
             <button

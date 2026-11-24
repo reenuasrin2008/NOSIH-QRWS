@@ -34,6 +34,8 @@ def _fast_quantum_inspired_qubo(
     and bitstring probability distribution for the Quantum UI visualizations.
     """
     n = Q.shape[0]
+    if n == 0:
+        return "", 0.0, [], []
     rng = np.random.default_rng(seed)
 
     def energy(bits: np.ndarray) -> float:
@@ -53,7 +55,9 @@ def _fast_quantum_inspired_qubo(
         flip = int(rng.integers(0, n))
         cand[flip] = 1.0 - cand[flip]
         ce = energy(cand)
-        if ce < cur_e or rng.random() < math.exp((cur_e - ce) / temp):
+        if not math.isfinite(ce):
+            continue
+        if ce < cur_e or rng.random() < math.exp(max(-700.0, min(0.0, (cur_e - ce) / temp))):
             cur, cur_e = cand, ce
         if cur_e < best_e:
             best_bits, best_e = cur.copy(), cur_e
@@ -63,7 +67,7 @@ def _fast_quantum_inspired_qubo(
 
     best_str = "".join(str(int(b)) for b in best_bits)
     samples[best_str] = samples.get(best_str, 0) + shots // 3
-    total = sum(samples.values())
+    total = max(1, sum(samples.values()))
     top_bitstrings = sorted(
         [
             {

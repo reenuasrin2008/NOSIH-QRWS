@@ -7,12 +7,12 @@ from app.core.models import StrategyMetrics
 def compute_strategy_score(m: StrategyMetrics, total_tasks: int = 50) -> float:
     w = CONFIG.weights
     total = max(1, total_tasks)
-    completion_ratio = m.missions_completed / total
+    completion_ratio = max(0.0, min(1.0, m.missions_completed / total))
     uncompleted_ratio = 1.0 - completion_ratio
-    deadline_ratio = min(1.0, m.deadline_violations / total)
-    norm_time = min(1.0, m.avg_response_time_s / 600.0) if m.missions_completed > 0 else 1.0
-    norm_energy = min(1.0, m.total_energy_wh / 4500.0)
-    norm_risk = min(1.0, m.operational_risk)
+    deadline_ratio = max(0.0, min(1.0, m.deadline_violations / total))
+    norm_time = max(0.0, min(1.0, m.avg_response_time_s / 600.0)) if m.missions_completed > 0 else 1.0
+    norm_energy = max(0.0, min(1.0, m.total_energy_wh / 4500.0))
+    norm_risk = max(0.0, min(1.0, m.operational_risk))
 
     objective_j = (
         w.w_rescue_time * norm_time

@@ -51,6 +51,24 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
   const riverMat = useMemo(() => createRealisticWaterMaterial(dayMode, 0.55, 0.96), [dayMode]);
   const oceanMat = useMemo(() => createRealisticWaterMaterial(dayMode, 1.35, 0.98), [dayMode]);
 
+  useEffect(() => {
+    return () => {
+      commTex.dispose();
+      resTex.dispose();
+      riverMat.dispose();
+      oceanMat.dispose();
+    };
+  }, [commTex, resTex, riverMat, oceanMat]);
+
+  useEffect(() => {
+    return () => {
+      commRough.dispose();
+      resBump.dispose();
+      roadTex.dispose();
+      groundTex.dispose();
+    };
+  }, [commRough, resBump, roadTex, groundTex]);
+
   // Partition 1,000+ buildings into 3 GPU-instanced batches + landmarks
   const { commBlds, resBlds, indBlds, landmarks, tallBeacons } = useMemo(() => {
     const comm: typeof city.buildings = [];

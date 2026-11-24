@@ -41,7 +41,7 @@ export const OperationsCommandApp: React.FC = () => {
   const [disSeverity, setDisSeverity] = useState(0.8);
   const [editCountryName, setEditCountryName] = useState("");
 
-  const refreshAll = () => {
+  const refreshAll = (signal?: AbortSignal) => {
     globalApi.getOverview().then(setOverview).catch(() => {});
     globalApi.getCountry(selectedCountryId).then((d) => {
       setCountryDetail(d);
@@ -50,15 +50,20 @@ export const OperationsCommandApp: React.FC = () => {
     globalApi.getApprovals().then((r) => setApprovals(r.approvals)).catch(() => {});
     globalApi.getEvents(40).then((r) => setEvents(r.events)).catch(() => {});
     globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetch("/api/hospitals").then((r) => r.json()).then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
+    fetch("/api/hospitals", { signal })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+      .then((d) => setAllHospitals(d.hospitals || []))
+      .catch(() => {});
   };
 
   const handleResetDemo = async () => {
     if (resettingDemo) return;
     setResettingDemo(true);
     try {
-      await fetch("/api/world/emergency-resume", { method: "POST" });
-      await fetch("/api/world/reset-local-snapshots", { method: "POST" });
+      const r1 = await fetch("/api/world/emergency-resume", { method: "POST" });
+      if (!r1.ok) throw new Error(`HTTP ${r1.status}`);
+      const r2 = await fetch("/api/world/reset-local-snapshots", { method: "POST" });
+      if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
     } catch {
       // Refresh dashboard regardless so operator sees authoritative state
     } finally {
@@ -68,16 +73,20 @@ export const OperationsCommandApp: React.FC = () => {
   };
 
   useEffect(() => {
-    refreshAll();
+    const ac = new AbortController();
+    refreshAll(ac.signal);
     const disconnect = connectGlobalWebSocket("quantum-operations", {
       onConnectionChange: setWsConnected,
       onSnapshot: (snap) => {
         if (snap.overview) setOverview(snap.overview);
         if (snap.approvals) setApprovals(snap.approvals);
       },
-      onWorldEvent: () => refreshAll(),
+      onWorldEvent: () => refreshAll(ac.signal),
     });
-    return disconnect;
+    return () => {
+      ac.abort();
+      disconnect();
+    };
   }, [selectedCountryId]);
 
   if (tab === "tactical") {

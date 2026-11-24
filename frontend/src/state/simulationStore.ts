@@ -19,6 +19,7 @@ interface SimStore {
   selectedTaskId: string | null;
   cameraMode: CameraMode;
   cameraFocusPoint: [number, number, number] | null;
+  cameraTransition: "smooth" | "instant";
 
   placementMode: PlacementMode;
   pendingLocation: [number, number, number] | null;
@@ -57,7 +58,7 @@ interface SimStore {
   selectDrone: (id: string | null) => void;
   selectTask: (id: string | null) => void;
   setCameraMode: (m: CameraMode) => void;
-  setCameraFocusPoint: (pt: [number, number, number] | null) => void;
+  setCameraFocusPoint: (pt: [number, number, number] | null, transition?: "smooth" | "instant") => void;
   setPlacementMode: (m: PlacementMode) => void;
   setPendingLocation: (pt: [number, number, number] | null) => void;
   setShowAddTargetModal: (v: boolean) => void;
@@ -96,6 +97,7 @@ export const useSimStore = create<SimStore>((set) => ({
   selectedTaskId: null,
   cameraMode: "orbit",
   cameraFocusPoint: null,
+  cameraTransition: "smooth",
 
   placementMode: "none",
   pendingLocation: null,
@@ -145,7 +147,8 @@ export const useSimStore = create<SimStore>((set) => ({
     set((s) => ({ selectedDroneId, selectedTaskId: null, rightTab: selectedDroneId ? "drone" : s.rightTab })),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
   setCameraMode: (cameraMode) => set({ cameraMode }),
-  setCameraFocusPoint: (cameraFocusPoint) => set({ cameraFocusPoint }),
+  setCameraFocusPoint: (cameraFocusPoint, transition = "smooth") =>
+    set({ cameraFocusPoint, cameraTransition: transition }),
   setPlacementMode: (placementMode) => set({ placementMode, pendingLocation: null }),
   setPendingLocation: (pendingLocation) => set({ pendingLocation }),
   setShowAddTargetModal: (showAddTargetModal) => set({ showAddTargetModal }),
@@ -161,7 +164,12 @@ export const useSimStore = create<SimStore>((set) => ({
     set((s) => {
       if (action === "select_drone") return { selectedDroneId: (payload.id as string | null) ?? null, selectedTaskId: null };
       if (action === "select_task") return { selectedTaskId: (payload.id as string | null) ?? null };
-      if (action === "focus_point") return { cameraFocusPoint: (payload.point as [number, number, number]) ?? null };
+      if (action === "focus_point" || action.startsWith("camera.focus_")) {
+        const transition: "smooth" | "instant" =
+          payload.transition === "instant" ? "instant" : "smooth";
+        const pt = (payload.point as [number, number, number] | undefined) ?? null;
+        return { cameraFocusPoint: pt, cameraTransition: transition };
+      }
       if (action === "camera_mode") return { cameraMode: (payload.mode as CameraMode) || "orbit" };
       if (action === "placement_mode") return { placementMode: (payload.mode as PlacementMode) || "none", pendingLocation: null };
       if (action === "toggle_layer") {
