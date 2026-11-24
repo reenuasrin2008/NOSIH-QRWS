@@ -100,7 +100,8 @@ export const LivingPopulation3D: React.FC<Props> = ({ worldSize, hasActiveDisast
       const flashRed = Math.floor(t * 8) % 2 === 0;
       ambGroupRef.current.children.forEach((grp, idx) => {
         const a = ambulances[idx];
-        const pos = (a.start + t * a.speed * a.dir + worldSize * 20) % (worldSize - 240) + 120;
+        const span = Math.max(1, worldSize - 240);
+        const pos = ((a.start + t * a.speed * a.dir) % span + span) % span + 120;
         if (a.axis === "x") {
           grp.position.set(pos, 4.5, a.lane);
           grp.rotation.y = a.dir > 0 ? Math.PI / 2 : -Math.PI / 2;

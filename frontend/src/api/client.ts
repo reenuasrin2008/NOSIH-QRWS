@@ -84,7 +84,7 @@ export function createSimWebSocket(
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data && data.type === "ui_command") {
+        if (data && (data.type === "ui_command" || data.type === "ui_sync")) {
           onUiCommand?.(data as UiCommandMessage);
         } else if (data && data.benchmark) {
           onMessage(data as ServerPayload);

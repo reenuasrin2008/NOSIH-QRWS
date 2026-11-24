@@ -24,9 +24,8 @@ from app.world.global_models import DisasterType, GeoPoint, SimulationMode, Swar
 APP_START_TIME = time.time()
 
 
-class LoginReq(BaseModel):
-    username: str
-    password: str
+class ResetSnapshotsReq(BaseModel):
+    confirm: str
 
 
 class CountryPatchReq(BaseModel):
@@ -45,19 +44,18 @@ class DisasterCreateReq(BaseModel):
     lon: Optional[float] = None
     severity: float = Field(default=0.75, ge=0.1, le=1.0)
     radius_km: float = Field(default=10.0, ge=1.0, le=50.0)
-    wind_kph: float = 65.0
-    rainfall_mm_hr: float = 55.0
-    require_approval: bool = False
+    wind_kph: float = Field(default=65.0, ge=0.0, le=500.0)
+    rainfall_mm_hr: float = Field(default=55.0, ge=0.0, le=1000.0)
 
 
 class RouteExploreReq(BaseModel):
     country_id: str = "COUNTRY-03"
     drone_id: Optional[str] = None
-    destination_lat: float
-    destination_lon: float
-    destination_label: str = "Target Location"
+    destination_lat: float = Field(ge=-90.0, le=90.0)
+    destination_lon: float = Field(ge=-180.0, le=180.0)
+    destination_label: str = Field(default="Target Location", max_length=200)
     objective: str = "BALANCED"
-    payload_kg: float = 1.0
+    payload_kg: float = Field(default=1.0, ge=0.0, le=50.0)
     required_sensor: Optional[str] = None
     k_candidates: int = Field(default=4, ge=1, le=8)
 
@@ -85,8 +83,9 @@ class MutualAidPrepareReq(BaseModel):
 
 
 class JarvisChatReq(BaseModel):
-    message: str
-    session_id: str = "default"
+    message: str = Field(max_length=20000)
+    session_id: str = Field(default="default", max_length=128)
+    use_llm_polish: bool = False
 
 
 class ApprovalDecisionReq(BaseModel):
@@ -132,11 +131,6 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         return HTTPException(status_code=status_code, detail=msg)
 
     # ---------------- Auth & RBAC ----------------
-    @router.post("/auth/login")
-    def login(req: LoginReq):
-        res = auth_service.login(req.username, req.password)
-        return {"token": res["token"], "session": to_dict(res["session"])}
-
     @router.get("/auth/me")
     def auth_me(op: OperatorSession = Depends(get_current_operator)):
         return to_dict(op)
@@ -161,20 +155,22 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         return {"saved": True, "storage": "local_json", "path": path}
 
     @router.post("/world/reset-local-snapshots")
-    def reset_local_snapshots():
+    def reset_local_snapshots(req: ResetSnapshotsReq, op: OperatorSession = Depends(get_current_operator)):
+        if req.confirm != "RESET_SNAPSHOTS":
+            raise HTTPException(status_code=400, detail="Confirmation must be RESET_SNAPSHOTS")
+        auth_service.check_permission(op, "admin:reset")
         repo = ExperimentRepository()
-        removed = 0
-        if repo.base_dir.exists():
-            for fpath in list(repo.base_dir.rglob("*")):
-                if fpath.is_file():
-                    fpath.unlink()
-                    removed += 1
+        removed = repo.reset_local_snapshots()
         fresh_world = GlobalWorldEngine(services.event_bus)
         services.world = fresh_world
-        services.route_explorer.world = fresh_world
-        services.approval_engine.world = fresh_world
-        services.jarvis.world = fresh_world
-        services.jarvis._country_lookup = services.jarvis._build_country_lookup()
+        services.route_explorer = AdvancedRouteExplorer(fresh_world)
+        services.approval_engine = ApprovalEngine(fresh_world)
+        services.jarvis = JarvisAgent(
+            world=fresh_world,
+            route_explorer=services.route_explorer,
+            approval_engine=services.approval_engine,
+            provider_manager=services.provider_manager,
+        )
         services.event_bus.emit(
             "world.reset_local_snapshots",
             payload={"removed_files": removed, "seed": fresh_world.seed},
@@ -188,7 +184,8 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         }
 
     @router.post("/world/tick")
-    def tick_world(dt_seconds: float = Query(default=60.0, ge=1.0, le=3600.0)):
+    def tick_world(dt_seconds: float = Query(default=60.0, ge=1.0, le=3600.0), op: OperatorSession = Depends(get_current_operator)):
+        auth_service.check_permission(op, "execute:operations")
         return {"clock": services.world.step(dt_seconds=dt_seconds), "totals": services.world.get_global_overview()["totals"]}
 
     @router.post("/world/emergency-stop")
@@ -210,7 +207,8 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         return {"emergency_stopped": False, "clock": services.world.get_clock_info()}
 
     @router.post("/world/mode/{mode}")
-    def set_world_mode(mode: SimulationMode):
+    def set_world_mode(mode: SimulationMode, op: OperatorSession = Depends(get_current_operator)):
+        auth_service.check_permission(op, "execute:operations")
         with services.world._mutation_lock:
             services.world.mode = mode
         services.event_bus.emit("world.mode_changed", payload={"mode": mode.value}, category="world")
@@ -282,23 +280,7 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
     def create_disaster(req: DisasterCreateReq, op: OperatorSession = Depends(get_current_operator)):
         auth_service.check_permission(op, "write:disasters")
         _require_country(req.country_id)
-        if req.require_approval:
-            return prepare_disaster(req)
-        try:
-            origin = GeoPoint(lat=req.lat, lon=req.lon) if (req.lat is not None and req.lon is not None) else None
-            ev = services.world.inject_disaster(
-                country_id=req.country_id,
-                disaster_type=req.disaster_type,
-                name=req.name,
-                origin=origin,
-                severity=req.severity,
-                radius_km=req.radius_km,
-                wind_kph=req.wind_kph,
-                rainfall_mm_hr=req.rainfall_mm_hr,
-            )
-            return to_dict(ev)
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        return prepare_disaster(req)
 
     @router.post("/disasters/{event_id}/stop")
     def stop_disaster(event_id: str, op: OperatorSession = Depends(get_current_operator)):
@@ -423,6 +405,10 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
     @router.post("/routes/multistop")
     def multistop_routes(req: MultiStopReq):
         _require_country(req.country_id)
+        if not req.points:
+            raise HTTPException(status_code=400, detail="At least one waypoint is required")
+        if len(req.points) > 50:
+            raise HTTPException(status_code=422, detail="points must contain no more than 50 waypoints")
         try:
             return services.route_explorer.plan_multistop_mission(
                 country_id=req.country_id, points=req.points, sensor_type=req.sensor_type, objective=req.objective
@@ -484,14 +470,25 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
 
     # ---------------- JARVIS AI, Voice, Tools & Approvals ----------------
     @router.post("/ai/chat")
-    async def jarvis_chat(req: JarvisChatReq):
-        return await services.jarvis.process_command(req.message, session_id=req.session_id)
+    async def jarvis_chat(req: JarvisChatReq, op: OperatorSession = Depends(get_current_operator)):
+        reply = await services.jarvis.process_command(
+            req.message,
+            session_id=f"{op.username}:{req.session_id}",
+            use_llm_polish=req.use_llm_polish,
+        )
+        reply["session_id"] = req.session_id
+        return reply
 
     @router.post("/ai/chat/stream")
-    async def jarvis_chat_stream(req: JarvisChatReq):
+    async def jarvis_chat_stream(req: JarvisChatReq, op: OperatorSession = Depends(get_current_operator)):
         async def _gen():
             try:
-                res = await services.jarvis.process_command(req.message, session_id=req.session_id)
+                res = await services.jarvis.process_command(
+                    req.message,
+                    session_id=f"{op.username}:{req.session_id}",
+                    use_llm_polish=req.use_llm_polish,
+                )
+                res["session_id"] = req.session_id
                 text = str(res.get("assistant_message") or "")
                 if text:
                     for chunk in text.split(" "):
@@ -538,8 +535,8 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         return {"tools": services.jarvis.registry, "count": len(services.jarvis.registry)}
 
     @router.get("/ai/conversations/{session_id}")
-    def ai_conversation_history(session_id: str):
-        return {"session_id": session_id, "messages": list(services.jarvis.conversations.get(session_id, []))}
+    def ai_conversation_history(session_id: str, op: OperatorSession = Depends(get_current_operator)):
+        return {"session_id": session_id, "messages": list(services.jarvis.conversations.get(f"{op.username}:{session_id}", []))}
 
     @router.get("/approvals")
     def list_approvals(status: Optional[str] = None):
@@ -634,6 +631,11 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
             "uptime_seconds": round(time.time() - APP_START_TIME, 2),
             "tool_count": services.jarvis.tool_count,
             "seed": services.world.seed,
+            "invariants": {
+                "approval_gated": True,
+                "zero_database": True,
+                "tool_count": services.jarvis.tool_count,
+            },
         }
 
     @router.get("/metrics", response_class=PlainTextResponse)
@@ -712,7 +714,8 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         }
 
     @router.post("/world/reseed")
-    def reseed_world(seed: int = Query(default=42, ge=1, le=2147483647)):
+    def reseed_world(seed: int = Query(default=42, ge=1, le=2147483647), op: OperatorSession = Depends(get_current_operator)):
+        auth_service.check_permission(op, "admin:reset")
         with services.world._mutation_lock:
             services.world.reset_to_seed(seed)
             services.jarvis._country_lookup = services.jarvis._build_country_lookup()

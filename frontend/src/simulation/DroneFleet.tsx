@@ -243,6 +243,14 @@ export const DroneFleet: React.FC<{
   const navStrobeRef = useRef<THREE.InstancedMesh>(null);
 
   const kinematicsRef = useRef<Map<string, DroneKinematics>>(new Map());
+  const droneIdsKey = drones.map((drone) => drone.id).join("|");
+
+  useEffect(() => {
+    const activeIds = new Set(drones.map((drone) => drone.id));
+    for (const key of kinematicsRef.current.keys()) {
+      if (!activeIds.has(key)) kinematicsRef.current.delete(key);
+    }
+  }, [droneIdsKey]);
 
   useEffect(() => {
     return () => {

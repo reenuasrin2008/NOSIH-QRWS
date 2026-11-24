@@ -388,7 +388,6 @@ class JarvisAgent:
                     user_query=message,
                     grounded_context=tool_context,
                     fallback_text=answer,
-                    tool_schemas=self.get_tool_schemas(),
                 )
                 polished = llm_res.get("text") if isinstance(llm_res, dict) else None
                 if isinstance(polished, str) and polished.strip():

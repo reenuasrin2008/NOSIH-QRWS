@@ -27,7 +27,11 @@ def build_handlers(world: GlobalWorldEngine) -> Dict[str, Callable[[Dict[str, An
 
     def _focus_hospital(args: Dict[str, Any]) -> Dict[str, Any]:
         hid = args.get("hospital_id")
-        if not hid or hid not in world.hospitals:
+        if hid and hid not in world.hospitals:
+            return {"status": "ERROR", "tool": "focus_hospital", "error": f"Unknown hospital_id: {hid}", "category": "navigation"}
+        if hid and args.get("country_id") and world.hospitals[hid].country_id != args["country_id"]:
+            return {"status": "ERROR", "tool": "focus_hospital", "error": "hospital_id does not belong to country_id", "category": "navigation"}
+        if not hid:
             cid = _cid(world, args)
             h = next((x for x in world.hospitals.values() if x.country_id == cid), None)
             hid = h.hospital_id if h else None
@@ -39,7 +43,11 @@ def build_handlers(world: GlobalWorldEngine) -> Dict[str, Callable[[Dict[str, An
 
     def _focus_drone(args: Dict[str, Any]) -> Dict[str, Any]:
         did = args.get("drone_id")
-        if not did or did not in world.drones:
+        if did and did not in world.drones:
+            return {"status": "ERROR", "tool": "focus_drone", "error": f"Unknown drone_id: {did}", "category": "navigation"}
+        if did and args.get("country_id") and world.drones[did].country_id != args["country_id"]:
+            return {"status": "ERROR", "tool": "focus_drone", "error": "drone_id does not belong to country_id", "category": "navigation"}
+        if not did:
             cid = _cid(world, args)
             d = next((x for x in world.drones.values() if x.country_id == cid), None)
             did = d.drone_id if d else None

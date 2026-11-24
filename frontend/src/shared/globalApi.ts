@@ -7,8 +7,8 @@ import type {
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, {
-    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
     ...init,
+    headers: { "Content-Type": "application/json", ...(init?.headers || {}) },
   });
   if (!res.ok) {
     const text = await res.text();
@@ -66,7 +66,7 @@ export const globalApi = {
   jarvisChat: (message: string, sessionId = "default") =>
     req<JarvisReply>("/api/ai/chat", {
       method: "POST",
-      body: JSON.stringify({ message, session_id: sessionId }),
+      body: JSON.stringify({ message, session_id: sessionId, use_llm_polish: true }),
     }),
   getProvidersStatus: () => req<ProviderStatusPayload>("/api/ai/providers/status"),
   getApprovals: (status?: string) =>

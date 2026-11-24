@@ -427,7 +427,7 @@ class CompareDronesToDestinationArgs(BaseToolArgs):
 
 class PlanMultistopMissionArgs(BaseToolArgs):
     country_id: Optional[str] = _country_id_field()
-    points: Optional[List[WaypointArg]] = Field(None, description="Optional ordered list of waypoint coordinates.")
+    points: Optional[List[WaypointArg]] = Field(None, description="Optional ordered list of waypoint coordinates (1-50).")
     sensor_type: SensorType = Field(SensorType.THERMAL, description="Required sensor (default thermal).")
     objective: RouteObjective = Field(
         RouteObjective.LOWEST_ENERGY, description="Optimization objective (default LOWEST_ENERGY)."

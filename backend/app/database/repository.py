@@ -142,3 +142,13 @@ class ExperimentRepository:
         out = self._safe_snapshot_path(filename)
         _atomic_write_json(out, snapshot)
         return str(out)
+
+    def reset_local_snapshots(self) -> int:
+        removed = 0
+        if not self.base_dir.exists():
+            return removed
+        for path in self.base_dir.glob("*.json"):
+            if path.is_file():
+                path.unlink()
+                removed += 1
+        return removed

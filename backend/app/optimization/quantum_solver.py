@@ -19,20 +19,14 @@ from app.core.models import (
 )
 from app.navigation.pathfinder import SpatialAirspaceGrid
 from app.optimization.feasibility import estimate_assignment_cost, is_drone_eligible_for_task
-from app.optimization.greedy_solver import solve_greedy
 
 
 def _fast_quantum_inspired_qubo(
     Q: np.ndarray,
-    p_layers: int = 2,
-    shots: int = 512,
+    steps: int = 16,
     seed: int = 42,
 ) -> Tuple[str, float, List[dict], List[dict]]:
-    """
-    Fast, lightweight Quantum-Inspired QUBO Demo Optimizer (<10ms).
-    Zero Qiskit overhead; produces a genuine QUBO energy convergence trace
-    and bitstring probability distribution for the Quantum UI visualizations.
-    """
+    """Classical simulated annealing with a QUBO energy/visit-distribution trace."""
     n = Q.shape[0]
     if n == 0:
         return "", 0.0, [], []
@@ -46,7 +40,7 @@ def _fast_quantum_inspired_qubo(
     samples: Dict[str, int] = {}
     history: List[dict] = []
 
-    steps = max(12, p_layers * 8)
+    steps = max(1, int(steps))
     cur = (rng.random(n) > 0.5).astype(float)
     cur_e = energy(cur)
     for step in range(1, steps + 1):
@@ -62,11 +56,11 @@ def _fast_quantum_inspired_qubo(
         if cur_e < best_e:
             best_bits, best_e = cur.copy(), cur_e
         bs = "".join(str(int(b)) for b in cur)
-        samples[bs] = samples.get(bs, 0) + max(1, shots // steps)
+        samples[bs] = samples.get(bs, 0) + 1
         history.append({"iteration": step, "energy": round(cur_e, 4), "best_energy": round(best_e, 4)})
 
     best_str = "".join(str(int(b)) for b in best_bits)
-    samples[best_str] = samples.get(best_str, 0) + shots // 3
+    samples[best_str] = samples.get(best_str, 0) + 1
     total = max(1, sum(samples.values()))
     top_bitstrings = sorted(
         [
@@ -91,9 +85,12 @@ def solve_quantum_qaoa(
     sim_time_s: float = 0.0,
     seed: int = 42,
 ) -> OptimizationResult:
-    """Fast Quantum-Inspired QUBO Demo Optimizer with classical constraint validation."""
+    """Classical simulated-annealing QUBO heuristic with routed validation.
+
+    The public function name is retained for API compatibility. No quantum
+    hardware or QAOA circuit is executed; metrics identify the actual backend.
+    """
     t0 = time.perf_counter()
-    baseline = solve_greedy(drones, tasks, city, grid, sim_time_s)
 
     avail_drones = [
         d for d in drones.values()
@@ -107,10 +104,17 @@ def solve_quantum_qaoa(
 
     max_q = min(CONFIG.qaoa_max_qubits, 8)
     pair_candidates: List[Tuple[str, str, float]] = []
-    for task in open_tasks[:4]:
-        for dr in avail_drones[:4]:
-            elig = is_drone_eligible_for_task(dr, task, city, grid)
-            ok = elig[0] if isinstance(elig, tuple) else bool(elig)
+    for task in open_tasks:
+        for dr in avail_drones:
+            if task.payload_required_kg > dr.max_payload_kg:
+                continue
+            if not all(cap in dr.capabilities for cap in task.required_capabilities):
+                continue
+            elig = is_drone_eligible_for_task(
+                dr, task, city, grid, strategy="quantum",
+                assigned_task_ids=list(dr.assigned_task_ids) + [task.id], tasks=tasks,
+            )
+            ok = elig[0]
             if ok:
                 c_res = estimate_assignment_cost(dr, task, city, sim_time_s)
                 cost = c_res[0] if isinstance(c_res, tuple) else float(c_res)
@@ -119,7 +123,7 @@ def solve_quantum_qaoa(
 
     pair_candidates.sort(key=lambda x: x[2])
     sub = pair_candidates[:max_q]
-    n = max(2, len(sub))
+    n = len(sub)
     Q = np.zeros((n, n), dtype=float)
     for i in range(n):
         ci = sub[i][2] if i < len(sub) else 100.0
@@ -129,32 +133,72 @@ def solve_quantum_qaoa(
                 Q[i, j] += 3.0
                 Q[j, i] += 3.0
 
-    best_bs, best_e, history, top_bs = _fast_quantum_inspired_qubo(
-        Q, p_layers=CONFIG.qaoa_layers, shots=CONFIG.qaoa_shots, seed=seed
-    )
+    best_bs, best_e, history, top_bs = _fast_quantum_inspired_qubo(Q, steps=16, seed=seed)
     elapsed_ms = round((time.perf_counter() - t0) * 1000.0, 2)
 
+    # Decode the QUBO bitstring and admit only routed, conflict-free,
+    # cumulative-battery-feasible assignments. Greedy output is not reused.
+    assignments: Dict[str, List[str]] = {
+        d.id: list(d.assigned_task_ids)
+        for d in avail_drones if d.assigned_task_ids
+    }
+    selected_tasks: set[str] = set()
+    repaired = 0
+    objective = 0.0
+    for idx, bit in enumerate(best_bs[:len(sub)]):
+        if bit != "1":
+            continue
+        did, tid, cost = sub[idx]
+        drone = drones[did]
+        task = tasks[tid]
+        if tid in selected_tasks:
+            repaired += 1
+            continue
+        proposed = assignments.get(did, []) + [tid]
+        if len(proposed) > 4:
+            repaired += 1
+            continue
+        ok, _, _ = is_drone_eligible_for_task(
+            drone, task, city, grid, strategy="quantum",
+            assigned_task_ids=proposed, tasks=tasks,
+        )
+        if not ok:
+            repaired += 1
+            continue
+        assignments.setdefault(did, []).append(tid)
+        selected_tasks.add(tid)
+        objective += cost
+
     q_metrics = QuantumMetrics(
-        executed=True,
-        backend_name="quantum_inspired_qubo_demo",
+        executed=n > 0,
+        backend_name="classical_simulated_annealing_qubo",
         num_qubits=n,
-        circuit_depth=n * CONFIG.qaoa_layers + 4,
-        qaoa_layers=CONFIG.qaoa_layers,
+        circuit_depth=0,
+        qaoa_layers=0,
         iterations=len(history),
-        shots=CONFIG.qaoa_shots,
+        shots=0,
         best_bitstring=best_bs,
         best_energy=round(best_e, 4),
         execution_time_ms=elapsed_ms,
-        candidates_evaluated=len(top_bs),
-        validation_passed=True,
-        repaired_assignments=0,
+        candidates_evaluated=len(history),
+        validation_passed=repaired == 0,
+        repaired_assignments=repaired,
         subproblem_tasks=sorted({x[1] for x in sub}),
         subproblem_drones=sorted({x[0] for x in sub}),
         top_samples=top_bs,
         convergence_history=history,
     )
 
-    baseline.algorithm = StrategyType.QUANTUM
-    baseline.solver_runtime_ms = elapsed_ms
-    baseline.quantum_metrics = q_metrics
-    return baseline
+    return OptimizationResult(
+        optimization_id=f"OPT-QBI-{uuid.uuid4().hex[:6].upper()}",
+        algorithm=StrategyType.QUANTUM,
+        started_at_iso=datetime.now(timezone.utc).isoformat(),
+        completed_at_iso=datetime.now(timezone.utc).isoformat(),
+        solver_runtime_ms=elapsed_ms,
+        objective_value=round(objective, 2),
+        feasible=True,
+        assignments=assignments,
+        missed_tasks=max(0, len(open_tasks) - len(selected_tasks)),
+        quantum_metrics=q_metrics,
+        fallback_used="Classical quantum-inspired QUBO heuristic; no quantum hardware or QAOA circuit executed.",
+    )

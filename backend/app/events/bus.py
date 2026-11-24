@@ -180,3 +180,16 @@ class AuthoritativeEventBus:
         if limit <= 0:
             return []
         return [to_dict(c) for c in list(self._commands)[-limit:]]
+
+    def get_queued_commands(self, frontend: str) -> List[Dict[str, Any]]:
+        return [
+            to_dict(cmd)
+            for cmd in self._commands
+            if cmd.status == "queued_frontend_disconnected" and cmd.frontend in {frontend, "all"}
+        ]
+
+    def mark_command_dispatched(self, command_id: str) -> None:
+        for cmd in self._commands:
+            if cmd.command_id == command_id:
+                cmd.status = "dispatched"
+                return

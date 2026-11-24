@@ -34,11 +34,15 @@ class TestQuantumRescueGlobalPlatform(unittest.TestCase):
     def test_03_flood_cyclone_fire_and_cascade(self) -> None:
         r_flood = self.client.post("/api/disasters", json={"country_id": "COUNTRY-01", "disaster_type": "FLOOD", "severity": 0.8})
         self.assertEqual(r_flood.status_code, 200)
-        ev = r_flood.json()
-        self.assertGreater(ev["affected_population"], 0)
+        flood_approval = r_flood.json()
+        self.assertEqual(flood_approval["status"], "PENDING")
+        ev = self.client.post(f"/api/approvals/{flood_approval['approval_id']}/approve", json={"auto_execute": True}).json()
+        self.assertGreater(ev["execution_result"]["disaster_event"]["affected_population"], 0)
 
         r_fire = self.client.post("/api/disasters", json={"country_id": "COUNTRY-05", "disaster_type": "FIRE", "severity": 0.75})
         self.assertEqual(r_fire.status_code, 200)
+        fire_approval = r_fire.json()
+        self.client.post(f"/api/approvals/{fire_approval['approval_id']}/approve", json={"auto_execute": True})
 
         r_tick = self.client.post("/api/world/tick?dt_seconds=120")
         self.assertEqual(r_tick.status_code, 200)

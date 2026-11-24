@@ -19,6 +19,7 @@ export const SceneVisualApp: React.FC<SceneVisualProps> = ({ countryArchetype, c
   const fps = useSimStore((s) => s.fps);
   const activeState = useSimStore((s) => s.activeState);
   const leaderboard = useSimStore((s) => s.leaderboard);
+  const selectedDroneId = useSimStore((s) => s.selectedDroneId);
   const toast = useSimStore((s) => s.toast);
   const setToast = useSimStore((s) => s.setToast);
   const applyServerPayload = useSimStore((s) => s.applyServerPayload);
@@ -86,12 +87,12 @@ export const SceneVisualApp: React.FC<SceneVisualProps> = ({ countryArchetype, c
             {dayMode ? "NIGHT" : "DAY"}
           </button>
           <a
-            href="http://localhost:5174"
+            href="/?mode=control"
             target="_blank"
             rel="noreferrer"
             className="pointer-events-auto px-2 py-0.5 bg-black/80 hover:bg-white hover:text-black border border-white/25 text-zinc-200 flex items-center gap-1 transition"
           >
-            CONTROL (:5174) <ExternalLink className="w-2.5 h-2.5" />
+            CONTROL <ExternalLink className="w-2.5 h-2.5" />
           </a>
         </div>
       </div>
@@ -103,7 +104,7 @@ export const SceneVisualApp: React.FC<SceneVisualProps> = ({ countryArchetype, c
       )}
 
       <AddTargetModal />
-      <FailureInjectionModal />
+      <FailureInjectionModal selectedDroneId={selectedDroneId} />
       <ShortcutsModal />
     </div>
   );

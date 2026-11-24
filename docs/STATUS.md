@@ -3,7 +3,7 @@
 | Check | Status | Details |
 | :--- | :--- | :--- |
 | Backend Tool Schema Integrity | PASS | 50 `TOOL_ARGS_MODELS` & 50 `TOOL_DESCRIPTIONS`, `report_tool_count.py` = 50, recursive `_assert_registry_integrity()` |
-| Backend Test Suite | PASS | 48/48 tests passing (`test_tool_schema.py` 14, `test_global_platform.py` 12, `test_v2_structured_and_tools.py` 6, `test_frontend_contract.py` 4, `test_compound_commands.py` 3, `test_approvals_safety.py` 1, `test_quantum_rescue.py` 5, `test_advanced_modules.py` 3) |
+| Backend Test Suite | PASS | 83/83 tests passing, including security, approval-race, reset-safety, provider-redaction, bounded-routing, and LLM-polish schema regressions |
 | Zero DB / Zero Docker / Zero Qiskit | PASS | Local JSON under `backend/local_data/` only |
 | Frontend Post-Processing & Gating | PASS | `EffectComposer` + `Bloom` + `Vignette` + `ACES_FILMIC` gated by `!prefersReducedMotion && quality !== "low"` (`?quality=low`) |
 | Frontend Instancing | PASS | `DroneFleet.tsx`, `LivingPopulation3D.tsx`, `City.tsx`, `JarvisNeuralCore3D.tsx` all use `<instancedMesh>` |

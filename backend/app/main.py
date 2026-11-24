@@ -2,6 +2,12 @@ from __future__ import annotations
 import app.core.compat  # noqa: F401
 import asyncio
 import logging
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -164,10 +170,27 @@ async def lifespan(_app: FastAPI):
                 except Exception:
                     pass
                 mgr.disconnect(ws)
+        await global_services.provider_manager.aclose()
 
 
 app = FastAPI(title="QUANTUM RESCUE — 3D Autonomous Drone Simulation & Optimization API", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=False, allow_methods=["*"], allow_headers=["*"])
+allowed_origins = [
+    origin.strip()
+    for origin in os.getenv(
+        "QR_ALLOWED_ORIGINS",
+        "http://localhost:5173,http://localhost:5174,http://localhost:5175,"
+        "http://127.0.0.1:5173,http://127.0.0.1:5174,http://127.0.0.1:5175,"
+        "http://127.0.0.1:5273,http://127.0.0.1:5274,http://127.0.0.1:5275",
+    ).split(",")
+    if origin.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=allowed_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.get("/api/health")
@@ -518,6 +541,9 @@ app.include_router(
 
 @app.websocket("/ws/global")
 async def ws_global(ws: WebSocket, client: str = Query(default="quantum-world")):
+    if client not in {"quantum-world", "quantum-operations", "quantum-jarvis"}:
+        await ws.close(code=1008)
+        return
     await global_ws_manager.connect(ws)
     global_services.event_bus.register_frontend(client)
     try:
@@ -527,6 +553,9 @@ async def ws_global(ws: WebSocket, client: str = Query(default="quantum-world"))
             "approvals": global_services.approval_engine.list_approvals(),
             "providers": global_services.provider_manager.get_status(),
         })
+        for command in global_services.event_bus.get_queued_commands(client):
+            await ws.send_json({"type": "frontend_command", "command": command})
+            global_services.event_bus.mark_command_dispatched(command["command_id"])
         while True:
             raw = await ws.receive_text()
             if raw == "ping":

@@ -2,23 +2,27 @@
 set -eu
 
 ROOT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+BACKEND_PYTHON="${ROOT_DIR}/backend/.venv/bin/python"
+if [ ! -x "${BACKEND_PYTHON}" ]; then
+  BACKEND_PYTHON="python3"
+fi
 
 echo "== Backend integrity =="
 (
   cd "${ROOT_DIR}/backend"
-  python3 -c "from app.ai.tool_args import TOOL_ARGS_MODELS, TOOL_DESCRIPTIONS; assert len(TOOL_ARGS_MODELS) == len(TOOL_DESCRIPTIONS) == 50"
-  COUNT="$(python3 scripts/report_tool_count.py)"
+  "${BACKEND_PYTHON}" -c "from app.ai.tool_args import TOOL_ARGS_MODELS, TOOL_DESCRIPTIONS; assert len(TOOL_ARGS_MODELS) == len(TOOL_DESCRIPTIONS) == 50"
+  COUNT="$("${BACKEND_PYTHON}" scripts/report_tool_count.py)"
   [ "${COUNT}" = "50" ] || { echo "Expected 50 tools, got ${COUNT}"; exit 1; }
-  python3 -c "from app.main import app; assert len(app.routes) >= 95"
+  "${BACKEND_PYTHON}" -c "from app.main import app; assert len(app.routes) >= 95"
 )
 
 echo "== Backend tests =="
 (
   cd "${ROOT_DIR}/backend"
-  if command -v pytest >/dev/null 2>&1; then
-    pytest tests/ -q
+  if "${BACKEND_PYTHON}" -c "import pytest" >/dev/null 2>&1; then
+    "${BACKEND_PYTHON}" -m pytest tests/ -q
   else
-    python3 -m unittest discover -s tests -p "test_*.py" -q
+    "${BACKEND_PYTHON}" -m unittest discover -s tests -p "test_*.py" -q
   fi
 )
 

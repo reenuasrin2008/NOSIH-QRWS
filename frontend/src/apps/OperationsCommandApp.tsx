@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -18,6 +18,7 @@ import { TacticalFlatWorldMap } from "../components/map/TacticalFlatWorldMap";
 import { TacticalLiveLogsPanel } from "../components/logs/TacticalLiveLogsPanel";
 import { connectGlobalWebSocket, globalApi } from "../shared/globalApi";
 import type { ApprovalItem, GlobalOverview } from "../shared/globalTypes";
+import { useTelemetryRefresh } from "../hooks/useTelemetryRefresh";
 
 type OpsTab = "overview" | "country" | "disasters" | "fleet" | "innovations" | "approvals" | "tactical";
 
@@ -40,21 +41,39 @@ export const OperationsCommandApp: React.FC = () => {
   const [disType, setDisType] = useState("CYCLONE");
   const [disSeverity, setDisSeverity] = useState(0.8);
   const [editCountryName, setEditCountryName] = useState("");
+  const selectedCountryIdRef = useRef(selectedCountryId);
+  const overviewVersionRef = useRef(-1);
+  selectedCountryIdRef.current = selectedCountryId;
 
-  const refreshAll = (signal?: AbortSignal) => {
-    globalApi.getOverview().then(setOverview).catch(() => {});
-    globalApi.getCountry(selectedCountryId).then((d) => {
-      setCountryDetail(d);
-      setEditCountryName(d?.profile?.name || "");
-    }).catch(() => {});
-    globalApi.getApprovals().then((r) => setApprovals(r.approvals)).catch(() => {});
-    globalApi.getEvents(40).then((r) => setEvents(r.events)).catch(() => {});
-    globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetch("/api/hospitals", { signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => setAllHospitals(d.hospitals || []))
-      .catch(() => {});
-  };
+  const applyOverview = useCallback((next: GlobalOverview) => {
+    const version = Number(next?.clock?.world_version);
+    if (Number.isFinite(version) && version < overviewVersionRef.current) return;
+    if (Number.isFinite(version)) overviewVersionRef.current = version;
+    setOverview(next);
+  }, []);
+
+  const refreshAll = useCallback(async (signal: AbortSignal) => {
+    const isCurrent = () => !signal.aborted;
+    // globalApi methods do not accept RequestInit; guard their responses so an
+    // older country/telemetry request can never replace a newer selection.
+    await Promise.all([
+      globalApi.getOverview().then((d) => { if (isCurrent()) applyOverview(d); }).catch(() => {}),
+      globalApi.getCountry(selectedCountryId).then((d) => {
+        if (!isCurrent() || selectedCountryIdRef.current !== selectedCountryId) return;
+        setCountryDetail(d);
+        setEditCountryName(d?.profile?.name || "");
+      }).catch(() => {}),
+      globalApi.getApprovals().then((r) => { if (isCurrent()) setApprovals(r.approvals); }).catch(() => {}),
+      globalApi.getEvents(40).then((r) => { if (isCurrent()) setEvents(r.events); }).catch(() => {}),
+      globalApi.getGlobalDrones().then((r) => { if (isCurrent()) setAllDrones(r.drones); }).catch(() => {}),
+      fetch("/api/hospitals", { signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((d) => { if (isCurrent()) setAllHospitals(d.hospitals || []); })
+        .catch(() => {}),
+    ]);
+  }, [selectedCountryId, applyOverview]);
+
+  const requestRefresh = useTelemetryRefresh(refreshAll);
 
   const handleResetDemo = async () => {
     if (resettingDemo) return;
@@ -62,32 +81,35 @@ export const OperationsCommandApp: React.FC = () => {
     try {
       const r1 = await fetch("/api/world/emergency-resume", { method: "POST" });
       if (!r1.ok) throw new Error(`HTTP ${r1.status}`);
-      const r2 = await fetch("/api/world/reset-local-snapshots", { method: "POST" });
+      const r2 = await fetch("/api/world/reset-local-snapshots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: "RESET_SNAPSHOTS" }),
+      });
       if (!r2.ok) throw new Error(`HTTP ${r2.status}`);
     } catch {
       // Refresh dashboard regardless so operator sees authoritative state
     } finally {
-      refreshAll();
+      requestRefresh();
       setResettingDemo(false);
     }
   };
 
   useEffect(() => {
-    const ac = new AbortController();
-    refreshAll(ac.signal);
+    requestRefresh();
+  }, [selectedCountryId, requestRefresh]);
+
+  useEffect(() => {
     const disconnect = connectGlobalWebSocket("quantum-operations", {
       onConnectionChange: setWsConnected,
       onSnapshot: (snap) => {
-        if (snap.overview) setOverview(snap.overview);
-        if (snap.approvals) setApprovals(snap.approvals);
+        if (snap.overview) applyOverview(snap.overview);
+        requestRefresh();
       },
-      onWorldEvent: () => refreshAll(ac.signal),
+      onWorldEvent: () => requestRefresh(),
     });
-    return () => {
-      ac.abort();
-      disconnect();
-    };
-  }, [selectedCountryId]);
+    return disconnect;
+  }, [requestRefresh, applyOverview]);
 
   if (tab === "tactical") {
     return (
@@ -96,7 +118,7 @@ export const OperationsCommandApp: React.FC = () => {
           <span className="text-xs font-mono text-sky-300">02 — OPERATIONS COMMAND · TACTICAL 4-SOLVER BENCHMARK ARENA</span>
           <button
             onClick={() => setTab("overview")}
-            className="px-3 py-1 rounded text-xs bg-slate-800 hover:bg-slate-700 text-slate-800 border border-slate-700"
+            className="px-3 py-1 rounded text-xs bg-slate-800 hover:bg-slate-700 text-white border border-slate-700"
           >
             Return to 7-Country Global Control Room
           </button>
@@ -134,7 +156,7 @@ export const OperationsCommandApp: React.FC = () => {
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => globalApi.tickWorld(120).then(refreshAll)}
+            onClick={() => globalApi.tickWorld(120).then(() => requestRefresh())}
             className="px-2.5 py-1 rounded text-xs bg-white hover:bg-slate-50 border border-slate-300 text-slate-800 flex items-center gap-1"
           >
             <Play className="w-3 h-3 text-emerald-400" /> Step +2m
@@ -147,14 +169,14 @@ export const OperationsCommandApp: React.FC = () => {
           </a>
           {overview?.clock.emergency_stopped ? (
             <button
-              onClick={() => globalApi.emergencyResume().then(refreshAll)}
+              onClick={() => globalApi.emergencyResume().then(() => requestRefresh())}
               className="px-2.5 py-1 rounded text-xs font-semibold bg-emerald-700 hover:bg-emerald-600 text-white"
             >
               RESUME SIM
             </button>
           ) : (
             <button
-              onClick={() => globalApi.emergencyStop().then(refreshAll)}
+              onClick={() => globalApi.emergencyStop().then(() => requestRefresh())}
               className="px-2.5 py-1 rounded text-xs font-semibold bg-red-700 hover:bg-red-600 text-white flex items-center gap-1"
             >
               <OctagonAlert className="w-3.5 h-3.5" /> E-STOP
@@ -318,7 +340,7 @@ export const OperationsCommandApp: React.FC = () => {
                     placeholder="Edit country name"
                   />
                   <button
-                    onClick={() => globalApi.updateCountry(selectedCountryId, { name: editCountryName }).then(refreshAll)}
+                    onClick={() => globalApi.updateCountry(selectedCountryId, { name: editCountryName }).then(() => requestRefresh())}
                     className="px-3 py-1 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white"
                   >
                     Save Profile
@@ -366,7 +388,7 @@ export const OperationsCommandApp: React.FC = () => {
                   <input type="range" min={0.2} max={1.0} step={0.05} value={disSeverity} onChange={(e) => setDisSeverity(parseFloat(e.target.value))} />
                 </div>
                 <button
-                  onClick={() => globalApi.createDisaster({ country_id: selectedCountryId, disaster_type: disType, severity: disSeverity }).then(refreshAll)}
+                  onClick={() => globalApi.createDisaster({ country_id: selectedCountryId, disaster_type: disType, severity: disSeverity }).then(() => requestRefresh())}
                   className="px-4 py-1.5 rounded text-xs font-medium bg-red-700 hover:bg-red-600 text-white"
                 >
                   Inject Live Disaster into {selectedCountryId}
@@ -393,7 +415,7 @@ export const OperationsCommandApp: React.FC = () => {
             <div className="space-y-4">
               <div className="flex flex-wrap gap-2">
                 <button
-                  onClick={() => globalApi.prepareSwarm({ country_id: selectedCountryId, drone_count: 8, mode: "AREA_SCAN", formation: "SEARCH_GRID" }).then(() => { refreshAll(); setTab("approvals"); })}
+                  onClick={() => globalApi.prepareSwarm({ country_id: selectedCountryId, drone_count: 8, mode: "AREA_SCAN", formation: "SEARCH_GRID" }).then(() => { requestRefresh(); setTab("approvals"); })}
                   className="px-3 py-1.5 rounded text-xs bg-sky-600 hover:bg-sky-500 text-white"
                 >
                   Prepare 8-Drone Search Swarm (Approval Required)
@@ -507,7 +529,7 @@ export const OperationsCommandApp: React.FC = () => {
                     <div key={d.donor_country_id} className="flex items-center justify-between p-2 rounded bg-slate-50 text-xs">
                       <span>{d.donor_name} ({d.distance_km} km · ETA {d.estimated_arrival_hours}h · Surplus {d.available_surplus})</span>
                       <button
-                        onClick={() => globalApi.prepareMutualAid({ target_country_id: selectedCountryId, donor_country_id: d.donor_country_id, resource_type: "ambulances", quantity: d.proposed_transfer }).then(() => { refreshAll(); setTab("approvals"); })}
+                        onClick={() => globalApi.prepareMutualAid({ target_country_id: selectedCountryId, donor_country_id: d.donor_country_id, resource_type: "ambulances", quantity: d.proposed_transfer }).then(() => { requestRefresh(); setTab("approvals"); })}
                         className="px-2.5 py-1 rounded bg-sky-700 hover:bg-sky-600 text-white"
                       >
                         Propose Transfer ({d.proposed_transfer})
@@ -534,13 +556,13 @@ export const OperationsCommandApp: React.FC = () => {
                     {a.status === "PENDING" && (
                       <div className="flex gap-2">
                         <button
-                          onClick={() => globalApi.approveOperation(a.approval_id, true).then(refreshAll)}
+                          onClick={() => globalApi.approveOperation(a.approval_id, true).then(() => requestRefresh())}
                           className="px-3 py-1 rounded text-xs bg-emerald-700 hover:bg-emerald-600 text-white"
                         >
                           Approve & Execute
                         </button>
                         <button
-                          onClick={() => globalApi.rejectOperation(a.approval_id).then(refreshAll)}
+                          onClick={() => globalApi.rejectOperation(a.approval_id).then(() => requestRefresh())}
                           className="px-3 py-1 rounded text-xs bg-red-900 hover:bg-red-800 text-red-100"
                         >
                           Reject

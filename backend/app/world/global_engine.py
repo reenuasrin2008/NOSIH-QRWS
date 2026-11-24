@@ -1,5 +1,6 @@
 from __future__ import annotations
 import copy
+from functools import wraps
 import math
 import random
 import threading
@@ -162,6 +163,15 @@ COUNTRY_ARCHETYPES: List[Dict[str, Any]] = [
     },
 ]
 
+def _locked_read(method):
+    """Serialize public world reads/serialization with the mutation lock."""
+    @wraps(method)
+    def _read(self, *args, **kwargs):
+        with self._mutation_lock:
+            return method(self, *args, **kwargs)
+    return _read
+
+
 OCCUPATIONS = [
     "Teacher", "Student", "Doctor", "Nurse", "Engineer", "Shopkeeper",
     "Driver", "Farmer", "Construction Worker", "Office Worker",
@@ -206,6 +216,9 @@ class GlobalWorldEngine:
         self.disasters: Dict[str, DisasterEvent] = {}
         self.decision_memory: List[Dict[str, Any]] = []
         self.counterfactual_runs: Dict[str, Dict[str, Any]] = {}
+        self._ambulance_state_until: Dict[str, float] = {}
+        self._first_response_sim_s: Optional[float] = None
+        self._medical_admissions = 0
 
         self._initialize_planet()
 
@@ -236,6 +249,9 @@ class GlobalWorldEngine:
             self.selected_country_id = "COUNTRY-03"
             self.decision_memory.clear()
             self.counterfactual_runs.clear()
+            self._ambulance_state_until.clear()
+            self._first_response_sim_s = None
+            self._medical_admissions = 0
             self.countries.clear()
             self.cities.clear()
             self.districts.clear()
@@ -617,6 +633,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Simulation Clock & Tick Progression
     # ------------------------------------------------------------------
+    @_locked_read
     def get_clock_info(self) -> Dict[str, Any]:
         total_sec = int(self.sim_time_s) % 86400
         hours = total_sec // 3600
@@ -651,9 +668,10 @@ class GlobalWorldEngine:
             dt_seconds = max(0.0, min(86400.0, float(dt_seconds))) if math.isfinite(dt_seconds) else 0.0
             speed = max(0.0, min(100.0, float(self.speed_multiplier))) if math.isfinite(self.speed_multiplier) else 1.0
             self.speed_multiplier = speed
-            if dt_seconds <= 0.0:
+            sim_dt = dt_seconds * speed
+            if sim_dt <= 0.0:
                 return self.get_clock_info()
-            self.sim_time_s += dt_seconds * speed
+            self.sim_time_s += sim_dt
             hour = int((self.sim_time_s % 86400) // 3600)
 
             # Update synthetic people daily routines when safe
@@ -674,12 +692,12 @@ class GlobalWorldEngine:
                     continue
                 if ev.disaster_type == DisasterType.CYCLONE:
                     # Move cyclone along heading with geographic bounds clamping
-                    dist_km = max(0.0, ev.travel_speed_kph) * (dt_seconds / 3600.0)
+                    dist_km = max(0.0, ev.travel_speed_kph) * (sim_dt / 3600.0)
                     rad = math.radians(ev.heading_deg)
                     ev.origin.lat = self._clamp_lat(ev.origin.lat + (dist_km / 111.0) * math.cos(rad))
                     lon_scale = 111.0 * max(0.1, math.cos(math.radians(ev.origin.lat)))
                     ev.origin.lon = self._clamp_lon(ev.origin.lon + (dist_km / lon_scale) * math.sin(rad))
-                    ev.radius_km = min(28.0, round(ev.radius_km + ev.growth_rate * 0.4, 2))
+                    ev.radius_km = min(28.0, round(ev.radius_km + ev.growth_rate * 0.4 * (sim_dt / 60.0), 2))
                     # Trigger secondary flood cascade if heavy rain persists and not yet triggered
                     if ev.rainfall_mm_hr >= 55.0 and not ev.triggered_cascades:
                         flood_ev = self.inject_disaster(
@@ -694,21 +712,22 @@ class GlobalWorldEngine:
                         )
                         ev.triggered_cascades.append(flood_ev.event_id)
                 elif ev.disaster_type in (DisasterType.FLOOD, DisasterType.FIRE, DisasterType.WILDFIRE):
-                    ev.radius_km = min(22.0, round(ev.radius_km + ev.growth_rate * 0.25, 2))
+                    ev.radius_km = min(22.0, round(ev.radius_km + ev.growth_rate * 0.25 * (sim_dt / 60.0), 2))
                 self._recompute_disaster_impact(ev)
 
             # Advance active swarms & drones
             for swarm in self.swarms.values():
                 if swarm.status == "ACTIVE":
-                    swarm.progress_pct = min(100.0, round(swarm.progress_pct + 4.5 * self.speed_multiplier, 1))
+                    swarm.progress_pct = min(100.0, round(swarm.progress_pct + 4.5 * (sim_dt / 60.0), 1))
                     for did in swarm.drone_ids:
                         d = self.drones.get(did)
                         if d and d.status in ("ASSIGNED", "IN_FLIGHT"):
                             d.status = "IN_FLIGHT"
-                            d.battery_pct = max(0.0, min(100.0, round(d.battery_pct - 0.6 * self.speed_multiplier, 1)))
+                            d.battery_pct = max(0.0, min(100.0, round(d.battery_pct - 0.6 * (sim_dt / 60.0), 1)))
                             # Move toward target center
-                            d.location.lat = self._clamp_lat(d.location.lat + (swarm.target_center.lat - d.location.lat) * 0.15)
-                            d.location.lon = self._clamp_lon(d.location.lon + (swarm.target_center.lon - d.location.lon) * 0.15)
+                            move_ratio = min(1.0, 0.15 * (sim_dt / 60.0))
+                            d.location.lat = self._clamp_lat(d.location.lat + (swarm.target_center.lat - d.location.lat) * move_ratio)
+                            d.location.lon = self._clamp_lon(d.location.lon + (swarm.target_center.lon - d.location.lon) * move_ratio)
                             d.altitude_m = round((swarm.altitude_band_m[0] + swarm.altitude_band_m[1]) / 2.0, 1)
                     if swarm.progress_pct >= 100.0:
                         swarm.status = "COMPLETED"
@@ -718,29 +737,13 @@ class GlobalWorldEngine:
                                 d.status = "AVAILABLE"
                                 d.swarm_id = None
 
-            # Advance dispatched ambulances
-            for amb in self.ambulances.values():
-                if amb.status in (AmbulanceStatus.DISPATCHED, AmbulanceStatus.EN_ROUTE_TO_PATIENT):
-                    amb.status = AmbulanceStatus.TRANSPORTING
-                    amb.patients_onboard = max(0, min(amb.patient_capacity, 2))
-                    amb.fuel_pct = max(0.0, min(100.0, round(amb.fuel_pct - 1.2, 1)))
-                elif amb.status == AmbulanceStatus.TRANSPORTING:
-                    amb.status = AmbulanceStatus.AT_HOSPITAL
-                    if amb.destination_hospital_id and amb.destination_hospital_id in self.hospitals:
-                        h = self.hospitals[amb.destination_hospital_id]
-                        admitted = max(0, min(amb.patients_onboard, h.available_beds))
-                        h.occupied_beds = min(h.total_beds, h.occupied_beds + admitted)
-                        if h.available_beds == 0:
-                            h.status = HospitalStatus.OVERLOADED
-                    amb.patients_onboard = 0
-                elif amb.status == AmbulanceStatus.AT_HOSPITAL:
-                    amb.status = AmbulanceStatus.AVAILABLE
-                    amb.assigned_district_id = None
-                    amb.destination_hospital_id = None
+            # Ambulance state transitions are driven by distance/arrival in
+            # _advance_ambulances; no tick may teleport them to a hospital.
 
-            self._advance_terrain_physics(dt_seconds)
-            self._advance_living_agents(dt_seconds)
-            self._advance_detailed_civilization(dt_seconds)
+            self._advance_terrain_physics(sim_dt)
+            self._advance_living_agents(sim_dt)
+            self._advance_ambulances(sim_dt)
+            self._advance_detailed_civilization(sim_dt)
             return self.get_clock_info()
 
     # ------------------------------------------------------------------
@@ -912,6 +915,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Humanitarian & Operational Calculators (Grounded in Live State)
     # ------------------------------------------------------------------
+    @_locked_read
     def calculate_ambulance_requirements(
         self,
         country_id: str,
@@ -987,6 +991,7 @@ class GlobalWorldEngine:
             ),
         }
 
+    @_locked_read
     def calculate_resource_requirements(self, country_id: str, horizon_hours: float = 24.0) -> Dict[str, Any]:
         if country_id not in self.countries:
             raise ValueError(f"Unknown country_id: {country_id}")
@@ -1045,6 +1050,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Innovation 2: Seven-Country Mutual Aid Network
     # ------------------------------------------------------------------
+    @_locked_read
     def find_mutual_aid_options(self, target_country_id: str, resource_type: str = "ambulances", quantity: int = 8) -> Dict[str, Any]:
         if target_country_id not in self.countries:
             raise ValueError(f"Unknown country_id: {target_country_id}")
@@ -1093,6 +1099,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Innovation 3: Rescue Equity Engine
     # ------------------------------------------------------------------
+    @_locked_read
     def evaluate_rescue_equity(self, country_id: str) -> Dict[str, Any]:
         c_districts = [d for d in self.districts.values() if d.country_id == country_id]
         rows = []
@@ -1124,6 +1131,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Innovation 4: Cascade Prediction Graph
     # ------------------------------------------------------------------
+    @_locked_read
     def get_cascade_graph(self, country_id: str) -> Dict[str, Any]:
         c_disasters = [d for d in self.disasters.values() if d.country_id == country_id and d.status == "ACTIVE"]
         max_sev = max((d.severity for d in c_disasters), default=0.0)
@@ -1154,46 +1162,125 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Innovation 1 & 5: Counterfactual / What-If Twin Runner
     # ------------------------------------------------------------------
+    def _clone_for_counterfactual(self) -> "GlobalWorldEngine":
+        """Clone mutable state without copying locks or sharing the live event bus."""
+        cloned = object.__new__(GlobalWorldEngine)
+        cloned._mutation_lock = threading.RLock()
+        cloned.event_bus = AuthoritativeEventBus()
+        cloned.rng = random.Random(self.seed)
+        cloned.rng.setstate(copy.deepcopy(self.rng.getstate()))
+        for name, value in self.__dict__.items():
+            if name not in ("_mutation_lock", "event_bus", "rng"):
+                setattr(cloned, name, copy.deepcopy(value))
+        return cloned
+
     def run_counterfactual_comparison(self, country_id: str, what_if_params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Run isolated counterfactual copies with identical starting snapshot & seed."""
+        """Run modest interventions on isolated clones and report measured outcomes."""
         with self._mutation_lock:
             if country_id not in self.countries:
                 raise ValueError(f"Unknown country_id: {country_id}")
             base_exposed = sum(d.exposed_residents for d in self.districts.values() if d.country_id == country_id)
-            base_inj = sum(d.injured_residents for d in self.districts.values() if d.country_id == country_id)
-            avail_drones = sum(1 for d in self.drones.values() if d.country_id == country_id and d.status != "DESTROYED")
-            avail_amb = sum(1 for a in self.ambulances.values() if a.country_id == country_id and a.status != AmbulanceStatus.OUT_OF_SERVICE)
-
             params = what_if_params or {}
             raw_loss = float(params.get("ambulance_loss_ratio", 0.0))
             amb_loss_ratio = max(0.0, min(1.0, raw_loss)) if math.isfinite(raw_loss) else 0.0
-            eff_amb = 0 if avail_amb == 0 else max(0, int(avail_amb * (1.0 - amb_loss_ratio)))
+            horizon_s = 600.0
+            raw_lead = float(params.get("early_evacuation_lead_seconds", 600.0))
+            early_lead_s = max(0.0, min(1800.0, raw_lead)) if math.isfinite(raw_lead) else 600.0
 
             strategies = [
-                ("SCENARIO_A_CONVENTIONAL", "Conventional Response (Baseline)", 1.0, 1.0, 0.52),
-                ("SCENARIO_B_HYBRID_OPT", "Hybrid Classical + QAOA Optimized", 0.74, 0.81, 0.76),
-                ("SCENARIO_C_EARLY_EVAC", "Hybrid + Early Evacuation (-2h)", 0.61, 0.72, 0.89),
-                ("SCENARIO_D_SWARM_ASSIST", "Drone Swarm + Mutual Aid Assisted", 0.56, 0.68, 0.93),
+                ("SCENARIO_A_CONVENTIONAL", "Conventional Response (Baseline)", "none", 0, False),
+                ("SCENARIO_B_HYBRID_OPT", "Additional Ambulance Dispatch", "dispatch", 4, False),
+                ("SCENARIO_C_EARLY_EVAC", "Early Evacuation + Dispatch", "early", 2, False),
+                ("SCENARIO_D_SWARM_ASSIST", "Drone Swarm + Dispatch", "swarm", 4, True),
             ]
             results = []
-            for sid, label, time_factor, shortage_factor, evac_ratio in strategies:
-                evacuated = int(base_exposed * evac_ratio)
-                first_resp_min = round(14.5 * time_factor * (1.0 + amb_loss_ratio * 0.5), 1)
-                completion_min = round(92.0 * time_factor, 1)
+            for sid, label, intervention, dispatch_count, use_swarm in strategies:
+                twin = self._clone_for_counterfactual()
+                twin.speed_multiplier = 1.0
+                twin.paused = False
+                twin.emergency_stopped = False
+                ambulances = [a for a in twin.ambulances.values() if a.country_id == country_id]
+                for amb in ambulances[:int(len(ambulances) * amb_loss_ratio)]:
+                    amb.status = AmbulanceStatus.OUT_OF_SERVICE
+                    amb.patients_onboard = 0
+                if intervention == "early" and early_lead_s > 0.0:
+                    # Actually simulate an earlier response window on the clone;
+                    # no outcome multiplier is applied.
+                    twin.step(dt_seconds=early_lead_s)
+
+                injured_districts = sorted(
+                    (d for d in twin.districts.values() if d.country_id == country_id),
+                    key=lambda d: d.injured_residents, reverse=True,
+                )
+                available = [a for a in ambulances if a.status == AmbulanceStatus.AVAILABLE]
+                for idx, amb in enumerate(available[:dispatch_count]):
+                    amb.status = AmbulanceStatus.DISPATCHED
+                    if injured_districts:
+                        amb.assigned_district_id = injured_districts[idx % len(injured_districts)].district_id
+                    hospitals = [h for h in twin.hospitals.values() if h.country_id == country_id and h.available_beds > 0]
+                    if hospitals:
+                        amb.destination_hospital_id = hospitals[idx % len(hospitals)].hospital_id
+
+                if use_swarm:
+                    drones = [
+                        d for d in twin.drones.values()
+                        if d.country_id == country_id and d.status == "AVAILABLE" and d.battery_pct >= 45.0
+                    ][:2]
+                    if drones:
+                        swarm_id = f"CF-SWARM-{uuid.uuid4().hex[:6].upper()}"
+                        twin.swarms[swarm_id] = SwarmOperation(
+                            swarm_id=swarm_id,
+                            country_id=country_id,
+                            name=f"{label} survey swarm",
+                            mode=SwarmMode.AREA_SCAN,
+                            formation=SwarmFormation.SEARCH_GRID,
+                            drone_ids=[d.drone_id for d in drones],
+                            target_center=copy.deepcopy(twin.countries[country_id].center),
+                            status="ACTIVE",
+                        )
+                        for drone in drones:
+                            drone.status = "IN_FLIGHT"
+                            drone.swarm_id = swarm_id
+                            drone.assigned_mission_id = swarm_id
+
+                base_admissions = twin._medical_admissions
+                twin._first_response_sim_s = None
+                start_time = twin.sim_time_s
+                twin.step(dt_seconds=horizon_s)
+                elapsed_min = round((twin.sim_time_s - start_time) / 60.0, 1)
+                evacuated = sum(d.evacuated_residents for d in twin.districts.values() if d.country_id == country_id)
+                remaining = max(0, base_exposed - evacuated)
+                first_response = twin._first_response_sim_s
+                active_drones = sum(
+                    1 for d in twin.drones.values()
+                    if d.country_id == country_id and d.status in ("ASSIGNED", "IN_FLIGHT", "DELIVERING")
+                )
+                effective_amb = sum(1 for a in ambulances if a.status != AmbulanceStatus.OUT_OF_SERVICE)
+                shelters = [s for s in twin.shelters.values() if s.country_id == country_id]
+                water_risk = round(
+                    100.0 * sum(1 for s in shelters if s.water_liters < s.current_occupancy * 4.5) / max(1, len(shelters)), 1
+                )
                 results.append({
                     "scenario_key": sid,
                     "label": label,
-                    "seed": self.seed,
+                    "seed": twin.seed,
                     "country_id": country_id,
                     "people_safely_evacuated": evacuated,
-                    "remaining_exposed": max(0, base_exposed - evacuated),
-                    "time_to_first_response_min": first_resp_min,
-                    "rescue_completion_min": completion_min,
-                    "medical_transport_cases": int(base_inj * (0.85 if "EARLY" in sid else 1.0)),
-                    "effective_ambulances": eff_amb,
-                    "active_drones": avail_drones,
-                    "water_shortage_risk_pct": round(38.0 * shortage_factor, 1),
-                    "mission_failures": 2 if "CONVENTIONAL" in sid else 0,
+                    "remaining_exposed": remaining,
+                    "time_to_first_response_min": round((first_response - start_time) / 60.0, 1) if first_response is not None else None,
+                    "rescue_completion_min": elapsed_min if remaining == 0 else None,
+                    "medical_transport_cases": twin._medical_admissions - base_admissions,
+                    "effective_ambulances": effective_amb,
+                    "active_drones": active_drones,
+                    "water_shortage_risk_pct": water_risk,
+                    "mission_failures": (
+                        sum(1 for a in ambulances if a.status == AmbulanceStatus.OUT_OF_SERVICE)
+                        + sum(1 for d in twin.drones.values() if d.country_id == country_id and d.status in ("FAILED", "DESTROYED"))
+                    ),
+                    "response_observed": first_response is not None,
+                    "intervention": intervention,
+                    "intervention_lead_min": round(early_lead_s / 60.0, 1) if intervention == "early" else 0.0,
+                    "simulated_horizon_min": elapsed_min,
                 })
 
             run_id = f"CF-{uuid.uuid4().hex[:6].upper()}"
@@ -1204,6 +1291,7 @@ class GlobalWorldEngine:
                 "world_version": self.event_bus.world_version,
                 "what_if_params": params,
                 "created_at": utc_now_iso(),
+                "methodology": "isolated cloned-state interventions with measured simulation outcomes",
                 "scenarios": results,
             }
             if len(self.counterfactual_runs) >= 100:
@@ -1277,6 +1365,7 @@ class GlobalWorldEngine:
     # ------------------------------------------------------------------
     # Serialization for All Three Frontends
     # ------------------------------------------------------------------
+    @_locked_read
     def get_global_overview(self) -> Dict[str, Any]:
         country_summaries = []
         for cid, c in self.countries.items():
@@ -1330,6 +1419,7 @@ class GlobalWorldEngine:
             "frontends": self.event_bus.frontend_status(),
         }
 
+    @_locked_read
     def get_country_detail(self, country_id: str) -> Dict[str, Any]:
         if country_id not in self.countries:
             raise ValueError(f"Unknown country_id: {country_id}")
@@ -1370,6 +1460,7 @@ class GlobalWorldEngine:
                 active_winds[ev.country_id] = (ev.wind_kph, ev.wind_direction_deg)
 
         dt_hr = dt_seconds / 3600.0
+        dt_min = dt_seconds / 60.0
         for (cid, r, c), cell in grid.items():
             # Downhill water diffusion + natural drainage recession
             if cell.water_depth_m > 0.05:
@@ -1379,7 +1470,7 @@ class GlobalWorldEngine:
                     nb = grid.get((cid, r + dr, c + dc))
                     if nb and (cell.elevation_m + cell.water_depth_m) > (nb.elevation_m + nb.water_depth_m):
                         head_diff = (cell.elevation_m + cell.water_depth_m) - (nb.elevation_m + nb.water_depth_m)
-                        flow = min(cell.water_depth_m * 0.18, head_diff * 0.04 * max(0.2, dt_hr * 8.0))
+                        flow = min(cell.water_depth_m * 0.18, head_diff * 0.04 * max(0.0, dt_hr * 8.0))
                         water_deltas[cell.cell_id] = water_deltas.get(cell.cell_id, 0.0) - flow * 0.25
                         water_deltas[nb.cell_id] = water_deltas.get(nb.cell_id, 0.0) + flow * 0.25
 
@@ -1392,7 +1483,7 @@ class GlobalWorldEngine:
                     nb = grid.get((cid, r + dr, c + dc))
                     if nb and nb.water_depth_m < 0.2:
                         align = max(0.15, 0.5 + 0.5 * (dc * wx + dr * wy))
-                        spread = cell.fire_intensity * nb.fire_fuel_class * align * (1.0 + wind_kph / 90.0) * 0.06
+                        spread = cell.fire_intensity * nb.fire_fuel_class * align * (1.0 + wind_kph / 90.0) * 0.06 * dt_min
                         fire_deltas[nb.cell_id] = fire_deltas.get(nb.cell_id, 0.0) + spread
 
         for cell_id, dw in water_deltas.items():
@@ -1408,7 +1499,7 @@ class GlobalWorldEngine:
 
     def _advance_living_agents(self, dt_seconds: float) -> None:
         """Move synthetic people toward shelters/work, ambulances along routes, and fire units to active fires."""
-        step_deg = 0.0012 * max(0.25, dt_seconds / 60.0)
+        step_deg = 0.0012 * max(0.0, dt_seconds / 60.0)
 
         # Synthetic residents: evacuate toward nearest accessible shelter if exposed, else commute
         shelters_by_country: Dict[str, List[ShelterFacility]] = {}
@@ -1431,7 +1522,7 @@ class GlobalWorldEngine:
                     dlon = target.location.lon - p.location.lon
                     dist = math.hypot(dlat, dlon)
                     spd = step_deg * road_factor * (0.6 if p.mobility != MobilityCategory.INDEPENDENT else 1.2)
-                    if dist <= max(0.0025, spd):
+                    if dist <= max(0.000001, spd):
                         p.location.lat = target.location.lat
                         p.location.lon = target.location.lon
                         if target.current_occupancy < target.max_occupancy:
@@ -1455,26 +1546,103 @@ class GlobalWorldEngine:
                     self.event_bus.emit("drone.low_battery", payload={"drone_id": d.drone_id, "battery_pct": d.battery_pct}, country_id=d.country_id, entity_id=d.drone_id, category="recovery", bump_version=False)
             elif d.status == "RETURNING":
                 c_center = self.countries[d.country_id].center
-                d.location.lat = round(d.location.lat + (c_center.lat - d.location.lat) * 0.3, 5)
-                d.location.lon = round(d.location.lon + (c_center.lon - d.location.lon) * 0.3, 5)
+                move_ratio = min(1.0, 0.3 * max(0.0, dt_seconds / 60.0))
+                d.location.lat = self._clamp_lat(d.location.lat + (c_center.lat - d.location.lat) * move_ratio)
+                d.location.lon = self._clamp_lon(d.location.lon + (c_center.lon - d.location.lon) * move_ratio)
                 if haversine_km(d.location, c_center) < 1.5:
                     d.status = "CHARGING"
                     d.altitude_m = 0.0
             elif d.status == "CHARGING":
-                d.battery_pct = min(100.0, round(d.battery_pct + 8.0 * max(0.5, dt_seconds / 60.0), 1))
+                d.battery_pct = min(100.0, round(d.battery_pct + 8.0 * max(0.0, dt_seconds / 60.0), 1))
                 if d.battery_pct >= 95.0:
                     d.status = "AVAILABLE"
 
-        # Road-accessibility-aware ambulance glide toward assigned hospital
-        for amb in self.ambulances.values():
-            if amb.destination_hospital_id and amb.destination_hospital_id in self.hospitals:
-                h = self.hospitals[amb.destination_hospital_id]
-                c_dists = [d.road_accessibility for d in self.districts.values() if d.country_id == amb.country_id]
-                avg_road = sum(c_dists) / max(1, len(c_dists))
-                step_ratio = 0.25 * max(0.25, avg_road)
-                amb.location.lat = round(amb.location.lat + (h.location.lat - amb.location.lat) * step_ratio, 5)
-                amb.location.lon = round(amb.location.lon + (h.location.lon - amb.location.lon) * step_ratio, 5)
+    def _move_ambulance(self, amb: AmbulanceUnit, target: GeoPoint, dt_seconds: float, road_factor: float = 1.0) -> bool:
+        """Move by ground distance and report physical arrival (never teleport)."""
+        distance_km = haversine_km(amb.location, target)
+        speed_km_s = max(0.0, amb.speed_kph) * max(0.0, min(1.0, road_factor)) / 3600.0
+        step_km = speed_km_s * max(0.0, dt_seconds)
+        amb.fuel_pct = max(0.0, round(amb.fuel_pct - step_km * 0.12, 2))
+        if distance_km <= max(0.001, step_km):
+            amb.location.lat = target.lat
+            amb.location.lon = target.lon
+            amb.location.elevation_m = target.elevation_m
+            return True
+        if distance_km > 0.0:
+            ratio = step_km / distance_km
+            amb.location.lat = self._clamp_lat(amb.location.lat + (target.lat - amb.location.lat) * ratio)
+            amb.location.lon = self._clamp_lon(amb.location.lon + (target.lon - amb.location.lon) * ratio)
+            amb.location.elevation_m = round(
+                amb.location.elevation_m + (target.elevation_m - amb.location.elevation_m) * ratio, 2
+            )
+        return False
 
+    def _advance_ambulances(self, dt_seconds: float) -> None:
+        """Distance-driven dispatch, scene, transport, handover, and return states."""
+        for amb in self.ambulances.values():
+            if amb.fuel_pct <= 0.0 and amb.status != AmbulanceStatus.OUT_OF_SERVICE:
+                amb.status = AmbulanceStatus.OUT_OF_SERVICE
+                amb.patients_onboard = 0
+                continue
+            districts = [d for d in self.districts.values() if d.country_id == amb.country_id]
+            avg_road = sum(d.road_accessibility for d in districts) / max(1, len(districts))
+
+            if amb.status in (AmbulanceStatus.DISPATCHED, AmbulanceStatus.EN_ROUTE_TO_PATIENT):
+                amb.status = AmbulanceStatus.EN_ROUTE_TO_PATIENT
+                district = self.districts.get(amb.assigned_district_id or "")
+                if district is None:
+                    district = max(districts, key=lambda d: d.injured_residents, default=None)
+                    if district:
+                        amb.assigned_district_id = district.district_id
+                target = district.center if district else self.countries[amb.country_id].center
+                if self._move_ambulance(amb, target, dt_seconds, avg_road):
+                    amb.status = AmbulanceStatus.ON_SCENE
+                    self._ambulance_state_until[amb.ambulance_id] = self.sim_time_s + 30.0
+                    if self._first_response_sim_s is None:
+                        self._first_response_sim_s = self.sim_time_s
+
+            elif amb.status == AmbulanceStatus.ON_SCENE:
+                if self.sim_time_s >= self._ambulance_state_until.get(amb.ambulance_id, self.sim_time_s):
+                    hospitals = [
+                        h for h in self.hospitals.values()
+                        if h.country_id == amb.country_id and h.status not in (HospitalStatus.CLOSED, HospitalStatus.DAMAGED)
+                    ]
+                    if amb.destination_hospital_id not in {h.hospital_id for h in hospitals}:
+                        amb.destination_hospital_id = min(
+                            hospitals, key=lambda h: haversine_km(amb.location, h.location), default=None
+                        ).hospital_id if hospitals else None
+                    amb.patients_onboard = min(amb.patient_capacity, 2)
+                    amb.status = AmbulanceStatus.TRANSPORTING if amb.destination_hospital_id else AmbulanceStatus.RETURNING
+
+            elif amb.status == AmbulanceStatus.TRANSPORTING:
+                hospital = self.hospitals.get(amb.destination_hospital_id or "")
+                if hospital is None:
+                    amb.status = AmbulanceStatus.RETURNING
+                    continue
+                if self._move_ambulance(amb, hospital.location, dt_seconds, avg_road):
+                    amb.status = AmbulanceStatus.AT_HOSPITAL
+                    admitted = max(0, min(amb.patients_onboard, hospital.available_beds))
+                    hospital.occupied_beds = min(hospital.total_beds, hospital.occupied_beds + admitted)
+                    self._medical_admissions += admitted
+                    amb.patients_onboard = 0
+                    if hospital.available_beds == 0:
+                        hospital.status = HospitalStatus.OVERLOADED
+                    self._ambulance_state_until[amb.ambulance_id] = self.sim_time_s + 30.0
+
+            elif amb.status == AmbulanceStatus.AT_HOSPITAL:
+                if self.sim_time_s >= self._ambulance_state_until.get(amb.ambulance_id, self.sim_time_s):
+                    amb.status = AmbulanceStatus.AVAILABLE
+                    amb.assigned_district_id = None
+                    amb.destination_hospital_id = None
+
+            elif amb.status == AmbulanceStatus.RETURNING:
+                home = self.countries[amb.country_id].center
+                if self._move_ambulance(amb, home, dt_seconds, avg_road):
+                    amb.status = AmbulanceStatus.AVAILABLE
+                    amb.assigned_district_id = None
+                    amb.destination_hospital_id = None
+
+    @_locked_read
     def get_live_entities(self, country_id: str) -> Dict[str, Any]:
         """Return real moving positions & states for 3D rendering in World Command."""
         if country_id not in self.countries:
@@ -1502,7 +1670,7 @@ class GlobalWorldEngine:
         wh_by_city: Dict[str, WarehouseInventory] = {w.city_id: w for w in self.warehouses.values()}
         for s in self.shelters.values():
             if s.current_occupancy > 0:
-                food_used = int(math.ceil(s.current_occupancy * 2.0 * dt_days))
+                food_used = int(round(s.current_occupancy * 2.0 * dt_days))
                 water_used = round(s.current_occupancy * 4.5 * dt_days, 2)
                 s.food_packages = max(0, s.food_packages - food_used)
                 s.water_liters = max(0.0, round(s.water_liters - water_used, 1))
@@ -1527,14 +1695,15 @@ class GlobalWorldEngine:
                 target_f = c_fires[0]
                 fu.status = "ON_SCENE"
                 fu.assigned_event_id = target_f.event_id
-                fu.location.lat = round(fu.location.lat + (target_f.origin.lat - fu.location.lat) * 0.25, 5)
-                fu.location.lon = round(fu.location.lon + (target_f.origin.lon - fu.location.lon) * 0.25, 5)
+                move_ratio = min(1.0, 0.25 * max(0.0, dt_seconds / 60.0))
+                fu.location.lat = self._clamp_lat(fu.location.lat + (target_f.origin.lat - fu.location.lat) * move_ratio)
+                fu.location.lon = self._clamp_lon(fu.location.lon + (target_f.origin.lon - fu.location.lon) * move_ratio)
                 fu.water_liters = max(0.0, round(fu.water_liters - 120.0 * (dt_seconds / 60.0), 1))
                 # Suppress nearby terrain fire cells
                 for cell in self.terrain.values():
                     if cell.country_id == fu.country_id and cell.fire_intensity > 0.0:
                         if haversine_km(fu.location, cell.center) <= 25.0:
-                            cell.fire_intensity = max(0.0, round(cell.fire_intensity - 0.08, 3))
+                            cell.fire_intensity = max(0.0, round(cell.fire_intensity - 0.08 * max(0.0, dt_seconds / 60.0), 3))
             elif fu.status == "ON_SCENE" and not c_fires:
                 fu.status = "AVAILABLE"
                 fu.assigned_event_id = None

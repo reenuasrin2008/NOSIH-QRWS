@@ -6,7 +6,7 @@
 * **Medical & Logistics**: `GET /api/hospitals`, `GET /api/ambulances`, `GET /api/ambulances/requirements/{country_id}`, `GET /api/shelters`, `GET /api/inventory`, `GET /api/resources/shortages/{country_id}`
 * **Drones, Swarms & Route Intelligence**: `GET /api/global/drones`, `POST /api/global/drones/{id}/destroy/prepare`, `GET /api/swarms`, `POST /api/swarms/prepare`, `POST /api/routes/explore`, `POST /api/routes/multistop`, `GET /api/routes/logs`
 * **Innovations**: `POST /api/counterfactual/{country_id}`, `GET /api/mutual-aid/{country_id}`, `POST /api/mutual-aid/prepare`, `GET /api/equity/{country_id}`, `GET /api/playbooks`
-* **JARVIS, Approvals & Providers**: `POST /api/ai/chat`, `POST /api/ai/chat/stream`, `GET /api/ai/providers/status`, `GET /api/ai/tools`, `GET /api/approvals`, `POST /api/approvals/{id}/approve`, `POST /api/approvals/{id}/reject`, `POST /api/approvals/{id}/modify`
+* **JARVIS, Approvals & Providers**: `POST /api/ai/chat` (`use_llm_polish: true` enables configured Gemini/Grok narrative polish), `POST /api/ai/chat/stream`, `GET /api/ai/providers/status`, `GET /api/ai/tools`, `GET /api/approvals`, `POST /api/approvals/{id}/approve`, `POST /api/approvals/{id}/reject`, `POST /api/approvals/{id}/modify`
 * **Events, Sync & Exports**: `GET /api/events`, `GET /api/audit-logs`, `GET /api/frontend/commands`, `POST /api/frontend/commands/ack`, `GET /api/global/export/geojson`, `GET /api/global/export/zip`
 * **WebSockets**: `ws://localhost:8000/ws/global?client=quantum-world|quantum-operations|quantum-jarvis` and `ws://localhost:8000/ws/simulation`
 

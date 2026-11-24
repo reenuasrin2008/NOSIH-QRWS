@@ -15,10 +15,26 @@ def generate_fleet(city: CityEnvironment, seed: int) -> Dict[str, DroneState]:
     for dtype, spec in DRONE_CLASS_SPECS.items():
         for _ in range(spec["count"]):
             st: Station = stations[(idx - 1) % len(stations)]
-            angle = rng.uniform(0, 2 * math.pi)
-            r = rng.uniform(8.0, 24.0)
-            px = round(max(30.0, min(city.world_size - 30.0, st.position[0] + math.cos(angle) * r)), 1)
-            pz = round(max(30.0, min(city.world_size - 30.0, st.position[2] + math.sin(angle) * r)), 1)
+            # Spawn outside building envelopes and ground-level hazard zones;
+            # a blocked start must be rejected rather than hidden by ascent.
+            px, pz = st.position[0], st.position[2]
+            for _ in range(80):
+                angle = rng.uniform(0, 2 * math.pi)
+                r = rng.uniform(65.0, 105.0)
+                cx = round(max(30.0, min(city.world_size - 30.0, st.position[0] + math.cos(angle) * r)), 1)
+                cz = round(max(30.0, min(city.world_size - 30.0, st.position[2] + math.sin(angle) * r)), 1)
+                in_building = any(
+                    abs(cx - b.x) < b.width / 2.0 + 12.0 and abs(cz - b.z) < b.depth / 2.0 + 12.0
+                    for b in city.buildings
+                )
+                in_hazard = any(
+                    hz.active and math.hypot(cx - hz.x, cz - hz.z) <= hz.radius + 8.0
+                    and hz.altitude_ceiling >= 2.0
+                    for hz in city.hazards
+                )
+                if not in_building and not in_hazard:
+                    px, pz = cx, cz
+                    break
             py = 2.0
             did = f"D-{idx:02d}"
             cap = spec["battery_capacity_wh"]

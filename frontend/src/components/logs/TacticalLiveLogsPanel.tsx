@@ -42,12 +42,13 @@ export const TacticalLiveLogsPanel: React.FC<TacticalLiveLogsPanelProps> = ({
   const [expandedIdx, setExpandedIdx] = useState<number | null>(null);
 
   const merged = useMemo(() => {
-    const normalizedTools = toolLogs.map((t, i) => ({
+    const normalizedTools: LogEntry[] = toolLogs.map((t, i) => ({
       event_id: `TOOL-${i}-${t.timestamp}`,
       timestamp: t.timestamp,
       event_type: t.tool || "ai.tool",
       category: "ai_tool",
       country_id: t.payload?.country_id || null,
+      world_version: t.world_version,
       duration_ms: t.duration_ms,
       status: t.status,
       summary: t.summary,
@@ -95,6 +96,7 @@ export const TacticalLiveLogsPanel: React.FC<TacticalLiveLogsPanelProps> = ({
             <input
               value={query}
               onChange={(e) => setQuery(e.target.value)}
+              aria-label="Filter logs"
               placeholder="Filter logs..."
               className="pl-6 pr-2 py-0.5 rounded bg-white border border-slate-300 text-[11px] text-slate-800 w-36 focus:outline-none focus:border-blue-500"
             />
@@ -113,12 +115,14 @@ export const TacticalLiveLogsPanel: React.FC<TacticalLiveLogsPanelProps> = ({
           const timeStr = (item.timestamp || "").split("T")[1]?.slice(0, 8) || "--:--:--";
           const isOpen = expandedIdx === idx;
           return (
-            <div
-              key={item.event_id || idx}
-              onClick={() => setExpandedIdx(isOpen ? null : idx)}
-              className="px-3 py-1.5 hover:bg-slate-50 cursor-pointer"
-            >
-              <div className="flex items-center gap-2.5">
+            <div key={item.event_id || idx} className="hover:bg-slate-50">
+              <button
+                type="button"
+                onClick={() => setExpandedIdx(isOpen ? null : idx)}
+                aria-expanded={isOpen}
+                className="w-full text-left px-3 py-1.5 cursor-pointer"
+              >
+                <span className="flex items-center gap-2.5">
                 <span className="text-slate-400 shrink-0">{timeStr}</span>
                 <span className={`px-1.5 py-0.2 rounded text-[9px] uppercase border shrink-0 font-semibold ${badgeCls}`}>
                   {cat.replace("_", " ")}
@@ -132,9 +136,10 @@ export const TacticalLiveLogsPanel: React.FC<TacticalLiveLogsPanelProps> = ({
                 {item.world_version !== undefined && (
                   <span className="text-slate-400 shrink-0">v{item.world_version}</span>
                 )}
-              </div>
+                </span>
+              </button>
               {isOpen && item.payload && (
-                <pre className="mt-1.5 p-2 rounded bg-slate-50 border border-slate-200 text-[10px] text-slate-700 overflow-x-auto max-h-32">
+                <pre className="mt-1.5 mb-1.5 mx-3 p-2 rounded bg-slate-50 border border-slate-200 text-[10px] text-slate-700 overflow-x-auto max-h-32">
                   {JSON.stringify(item.payload, null, 2)}
                 </pre>
               )}

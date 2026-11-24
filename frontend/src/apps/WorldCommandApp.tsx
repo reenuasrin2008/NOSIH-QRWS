@@ -1,9 +1,10 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Globe, MapPin, ShieldAlert, Radio, Compass } from "lucide-react";
 import { DioramaOpenWorld3D } from "../simulation/DioramaOpenWorld3D";
 import { TacticalFlatWorldMap } from "../components/map/TacticalFlatWorldMap";
 import { connectGlobalWebSocket, globalApi } from "../shared/globalApi";
 import type { GlobalOverview } from "../shared/globalTypes";
+import { useTelemetryRefresh } from "../hooks/useTelemetryRefresh";
 
 export const WorldCommandApp: React.FC = () => {
   const [viewMode, setViewMode] = useState<"flat" | "planet">("flat");
@@ -18,28 +19,39 @@ export const WorldCommandApp: React.FC = () => {
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [lastCommandBanner, setLastCommandBanner] = useState<string | null>(null);
+  const overviewVersionRef = useRef(-1);
 
-  const refresh = (signal?: AbortSignal) => {
+  const applyOverview = useCallback((next: GlobalOverview) => {
+    const version = Number(next?.clock?.world_version);
+    if (Number.isFinite(version) && version < overviewVersionRef.current) return;
+    if (Number.isFinite(version)) overviewVersionRef.current = version;
+    setOverview(next);
+  }, []);
+
+  const refresh = useCallback(async (signal: AbortSignal) => {
+    const isCurrent = () => !signal.aborted;
     const fetchJson = (url: string) =>
       fetch(url, { signal }).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))));
-    globalApi.getOverview().then(setOverview).catch(() => {});
-    globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetchJson("/api/hospitals").then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
-    fetchJson("/api/shelters").then((d) => setAllShelters(d.shelters || [])).catch(() => {});
-    fetchJson("/api/ambulances").then((d) => setAllAmbulances(d.ambulances || [])).catch(() => {});
-    fetchJson("/api/fire-units").then((d) => setAllFireUnits(d.fire_units || [])).catch(() => {});
-    globalApi.getSwarms().then((r) => setActiveSwarms(r.swarms || [])).catch(() => {});
-  };
+    await Promise.all([
+      globalApi.getOverview().then((d) => { if (isCurrent()) applyOverview(d); }).catch(() => {}),
+      globalApi.getGlobalDrones().then((r) => { if (isCurrent()) setAllDrones(r.drones); }).catch(() => {}),
+      fetchJson("/api/hospitals").then((d) => { if (isCurrent()) setAllHospitals(d.hospitals || []); }).catch(() => {}),
+      fetchJson("/api/shelters").then((d) => { if (isCurrent()) setAllShelters(d.shelters || []); }).catch(() => {}),
+      fetchJson("/api/ambulances").then((d) => { if (isCurrent()) setAllAmbulances(d.ambulances || []); }).catch(() => {}),
+      fetchJson("/api/fire-units").then((d) => { if (isCurrent()) setAllFireUnits(d.fire_units || []); }).catch(() => {}),
+      globalApi.getSwarms().then((r) => { if (isCurrent()) setActiveSwarms(r.swarms || []); }).catch(() => {}),
+    ]);
+  }, [applyOverview]);
+
+  const requestRefresh = useTelemetryRefresh(refresh);
 
   useEffect(() => {
-    const ac = new AbortController();
-    refresh(ac.signal);
     const disconnect = connectGlobalWebSocket("quantum-world", {
       onConnectionChange: setWsConnected,
       onSnapshot: (snap) => {
-        if (snap.overview) setOverview(snap.overview);
+        if (snap.overview) applyOverview(snap.overview);
       },
-      onWorldEvent: () => refresh(ac.signal),
+      onWorldEvent: () => requestRefresh(),
       onFrontendCommand: (cmd) => {
         if (cmd.command_type === "camera.focus_country" && cmd.target_id) {
           setSelectedCountryId(cmd.target_id);
@@ -52,11 +64,8 @@ export const WorldCommandApp: React.FC = () => {
         }
       },
     });
-    return () => {
-      ac.abort();
-      disconnect();
-    };
-  }, []);
+    return disconnect;
+  }, [requestRefresh, applyOverview]);
 
   const selectedCountry = overview?.countries.find((c) => c.country_id === selectedCountryId);
 
@@ -185,7 +194,7 @@ export const WorldCommandApp: React.FC = () => {
                 <h2 className="text-sm font-semibold">{selectedCountry.name}</h2>
                 <div className="text-xs text-slate-500">Capital: {selectedCountry.capital_name}</div>
               </div>
-              <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-800">
+              <span className="text-xs font-mono px-2 py-0.5 rounded bg-emerald-50 border border-emerald-300 text-emerald-800 font-semibold">
                 Readiness {selectedCountry.readiness_score}%
               </span>
             </div>
@@ -226,7 +235,7 @@ export const WorldCommandApp: React.FC = () => {
                       severity: 0.78,
                       radius_km: 11.0,
                     })
-                    .then(refresh)
+                    .then(() => requestRefresh())
                 }
                 className="flex-1 py-1.5 rounded text-xs font-medium bg-red-50 hover:bg-red-100 border border-red-300 text-red-700 font-semibold flex items-center justify-center gap-1"
               >
@@ -241,7 +250,7 @@ export const WorldCommandApp: React.FC = () => {
                       severity: 0.85,
                       radius_km: 14.0,
                     })
-                    .then(refresh)
+                    .then(() => requestRefresh())
                 }
                 className="flex-1 py-1.5 rounded text-xs font-medium bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 font-semibold"
               >

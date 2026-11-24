@@ -12,11 +12,7 @@ from app.core.models import (
     SimulationEvent, SimulationStatus, StrategyMetrics, StrategyType, TaskPriority, TaskStatus
 )
 from app.navigation.pathfinder import SpatialAirspaceGrid
-from app.optimization.classical_solver import solve_classical
 from app.optimization.feasibility import is_drone_eligible_for_task
-from app.optimization.greedy_solver import solve_greedy
-from app.optimization.hybrid_solver import solve_hybrid
-from app.optimization.quantum_solver import solve_quantum_qaoa
 from app.optimization.score_engine import compute_strategy_score
 from app.simulation.battery_model import compute_segment_energy_wh
 from app.simulation.city_generator import generate_city
@@ -111,21 +107,14 @@ class SimulationWorld:
         self.status = SimulationStatus.OPTIMIZING if trigger_reason == "initial_plan" else SimulationStatus.REPLANNING
         self.log_event("solver", "optimizer_started", f"{self.strategy.value.upper()} optimizer started ({trigger_reason}).")
 
-        try:
-            if self.strategy == StrategyType.GREEDY:
-                res = solve_greedy(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
-            elif self.strategy == StrategyType.CLASSICAL:
-                res = solve_classical(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
-            elif self.strategy == StrategyType.QUANTUM:
-                res = solve_quantum_qaoa(self.drones, self.tasks, self.city, self.grid, self.sim_time_s, seed=self.seed)
-            else:
-                res = solve_hybrid(self.drones, self.tasks, self.city, self.grid, self.sim_time_s, seed=self.seed)
-        except Exception as exc:
-            self.last_error = str(exc)
-            self.log_event("solver", "optimizer_error", f"{self.strategy.value.upper()} failed ({exc}); engaging feasibility-checked greedy fallback.")
-            res = solve_greedy(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
-            res.fallback_used = f"Greedy failover after error: {exc}"
-            res.errors.append(str(exc))
+        res = execute_with_failover(
+            self.strategy, self.drones, self.tasks, self.city, self.grid,
+            self.sim_time_s, seed=self.seed,
+        )
+        self.feasible = res.feasible
+        if res.errors:
+            self.last_error = "; ".join(res.errors)
+            self.log_event("solver", "optimizer_error", f"{self.strategy.value.upper()} solver failover: {self.last_error}")
 
         self.optimization_history.append(res)
         self.last_solver_runtime_ms = res.solver_runtime_ms
@@ -186,13 +175,16 @@ class SimulationWorld:
             if not task or task.status == TaskStatus.COMPLETED:
                 drone.assigned_task_ids.pop(0)
                 continue
-            ok, reason, route = is_drone_eligible_for_task(drone, task, self.city, self.grid, strategy=self.strategy.value)
-            if not ok or route is None:
+            ok, reason, route = is_drone_eligible_for_task(
+                drone, task, self.city, self.grid, strategy=self.strategy.value, tasks=self.tasks,
+            )
+            if not ok or route is None or not self.grid.is_route_valid(route):
                 drone.assigned_task_ids.pop(0)
                 task.assigned_drone_id = None
                 task.status = TaskStatus.REQUIRES_REASSIGNMENT
                 task.unassigned_reason = reason
                 if "Battery reserve" in reason:
+                    self._release_drone_tasks(drone, reason="SEQUENCED_BATTERY_RESERVE")
                     self._send_drone_to_charge(drone)
                     return
                 continue
@@ -216,23 +208,88 @@ class SimulationWorld:
             drone.current_route = None
             drone.active_task_id = None
 
-    def _send_drone_to_charge(self, drone: DroneState, rtb_only: bool = False) -> None:
-        st = self.charging.select_available_station(drone, self.city)
-        target = st.position if st else drone.home_position
-        route = self.grid.plan_route(
-            start=drone.position, goal=(target[0], 2.0, target[2]),
-            drone=drone, strategy=self.strategy.value, task_id=None, payload_kg=0.0,
-        )
-        drone.current_route = route
+    def _send_drone_to_charge(self, drone: DroneState, rtb_only: bool = False) -> bool:
+        if drone.active_task_id:
+            self._release_drone_tasks(drone, reason="MANUAL_OR_SAFETY_RTB")
+        selected_route = None
+
+        def route_to(station):
+            nonlocal selected_route
+            target = (
+                station.position[0],
+                self.grid.safe_surface_altitude(station.position[0], station.position[2], station.position[1]),
+                station.position[2],
+            )
+            candidate = self.grid.plan_route(
+                start=drone.position, goal=target, drone=drone,
+                strategy=self.strategy.value, task_id=None, payload_kg=0.0,
+            )
+            if not candidate.feasible or not self.grid.is_route_valid(candidate):
+                return False
+            selected_route = candidate
+            return True
+
+        st = self.charging.reserve_station(drone, self.city, route_check=route_to)
+        if st is None:
+            # No open pad: divert to the nearest station with a validated route
+            # and join its atomic waiting queue.
+            active = sorted(
+                (s for s in self.city.stations if s.active),
+                key=lambda s: math.hypot(drone.position[0] - s.position[0], drone.position[2] - s.position[2]),
+            )
+            for candidate_st in active:
+                if route_to(candidate_st):
+                    self.charging.request_pad(drone.id, candidate_st)
+                    st = candidate_st
+                    break
+        if st is None or selected_route is None:
+            target = (
+                drone.home_position[0],
+                self.grid.safe_surface_altitude(drone.home_position[0], drone.home_position[2], drone.home_position[1]),
+                drone.home_position[2],
+            )
+            selected_route = self.grid.plan_route(
+                start=drone.position, goal=target, drone=drone,
+                strategy=self.strategy.value, task_id=None, payload_kg=0.0,
+            )
+            if not selected_route.feasible or not self.grid.is_route_valid(selected_route):
+                drone.current_route = None
+                drone.status = DroneStatus.LOW_BATTERY
+                drone.groundspeed_mps = 0.0
+                self.log_event("drone", "rtb_route_rejected", f"Drone {drone.id} has no validated safe charging/return route.", entity_id=drone.id)
+                return False
+
+        drone.current_route = selected_route
         drone.waypoint_index = 1
         drone.active_task_id = None
         drone.current_payload_kg = 0.0
         drone.status = DroneStatus.RETURNING
+        drone.groundspeed_mps = 0.0
+        queued = not self.charging.has_reservation(drone.id)
         if not rtb_only:
-            self.log_event("drone", "low_battery_rtb", f"Drone {drone.id} battery at {drone.battery_percent:.1f}% — returning to {st.name if st else 'home'}.", entity_id=drone.id)
+            self.log_event(
+                "drone", "low_battery_rtb",
+                f"Drone {drone.id} battery at {drone.battery_percent:.1f}% — returning to {st.name if st else 'home'}"
+                + (" (waiting queue)." if queued else "."),
+                entity_id=drone.id,
+            )
+        return True
+
+    def _try_begin_charging(self, drone: DroneState) -> bool:
+        if not self.charging.has_reservation(drone.id):
+            return False
+        drone.status = DroneStatus.CHARGING
+        drone.current_route = None
+        drone.waypoint_index = 0
+        drone.groundspeed_mps = 0.0
+        drone.velocity = (0.0, 0.0, 0.0)
+        drone.eta_seconds = 0.0
+        return True
 
     def step(self, dt: float = CONFIG.tick_dt) -> None:
         if self.status not in (SimulationStatus.RUNNING, SimulationStatus.READY):
+            return
+        if not math.isfinite(dt) or dt <= 0.0 or not math.isfinite(self.speed_multiplier) or self.speed_multiplier <= 0.0:
             return
         if self.status == SimulationStatus.READY:
             self.status = SimulationStatus.RUNNING
@@ -291,7 +348,7 @@ class SimulationWorld:
             if drone.status == DroneStatus.AVAILABLE and drone.assigned_task_ids:
                 self._dispatch_next_task(drone)
 
-        conflicts = resolve_airspace_conflicts(self.drones)
+        conflicts = resolve_airspace_conflicts(self.drones, self.grid)
         if conflicts:
             self.airspace_conflicts_total += len(conflicts)
 
@@ -316,8 +373,9 @@ class SimulationWorld:
             drone.pitch_rad = 0.0
             drone.bank_rad = 0.0
             if drone.status == DroneStatus.RETURNING:
-                drone.status = DroneStatus.CHARGING
-                drone.current_route = None
+                if not self._try_begin_charging(drone):
+                    drone.eta_seconds = 0.0
+                    # Remain safely on station approach until a queued pad is promoted.
             elif drone.active_task_id and drone.active_task_id in self.tasks:
                 drone.status = DroneStatus.DELIVERING
                 drone.service_timer_s = self.tasks[drone.active_task_id].service_time_seconds
@@ -385,8 +443,9 @@ class SimulationWorld:
             drone.pitch_rad = 0.0
             drone.eta_seconds = 0.0
             if drone.status == DroneStatus.RETURNING:
-                drone.status = DroneStatus.CHARGING
-                drone.current_route = None
+                if not self._try_begin_charging(drone):
+                    drone.eta_seconds = 0.0
+                    # Remain safely on station approach until a queued pad is promoted.
             elif drone.active_task_id and drone.active_task_id in self.tasks:
                 drone.status = DroneStatus.DELIVERING
                 drone.service_timer_s = self.tasks[drone.active_task_id].service_time_seconds
@@ -410,10 +469,11 @@ class SimulationWorld:
         burn_rate = max(0.05, energy_wh / max(dt, 0.1))
         drone.estimated_remaining_flight_s = round(drone.remaining_battery_wh / burn_rate, 1)
 
-        if drone.battery_percent <= 19.0 and drone.status == DroneStatus.IN_FLIGHT:
-            self._release_drone_tasks(drone, reason="LOW_BATTERY_RESERVE")
+        if drone.battery_percent <= 19.0 and drone.status in (DroneStatus.IN_FLIGHT, DroneStatus.RETURNING):
+            released = self._release_drone_tasks(drone, reason="LOW_BATTERY_RESERVE")
             self._send_drone_to_charge(drone)
-            self.run_optimizer("low_battery_recovery")
+            if released:
+                self.run_optimizer("low_battery_recovery")
 
     def _release_drone_tasks(self, drone: DroneState, reason: str) -> List[str]:
         released: List[str] = []
@@ -453,7 +513,10 @@ class SimulationWorld:
 
         if assign_drone_id and assign_drone_id in self.drones:
             d = self.drones[assign_drone_id]
-            ok, reason, _ = is_drone_eligible_for_task(d, task, self.city, self.grid, strategy=self.strategy.value)
+            ok, reason, _ = is_drone_eligible_for_task(
+                d, task, self.city, self.grid, strategy=self.strategy.value,
+                assigned_task_ids=list(d.assigned_task_ids) + [task.id], tasks=self.tasks,
+            )
             if ok:
                 task.assigned_drone_id = d.id
                 task.status = TaskStatus.ASSIGNED
@@ -477,18 +540,32 @@ class SimulationWorld:
             return {"ok": False, "error": f"Drone {drone_id} not found."}
         if drone.status in (DroneStatus.DESTROYED, DroneStatus.DAMAGED, DroneStatus.COMMUNICATION_LOST):
             return {"ok": False, "error": f"Drone {drone_id} is {drone.status.value} and cannot accept waypoints."}
+        if drone.active_task_id or drone.status in (DroneStatus.DELIVERING, DroneStatus.RETURNING, DroneStatus.CHARGING):
+            return {"ok": False, "error": "Drone has an active delivery or charging return; cancel/release it before setting a custom waypoint."}
+        if not self.grid.is_valid_point(destination):
+            return {"ok": False, "error": "Destination must contain three finite coordinates."}
 
         route = self.grid.plan_route(
-            start=drone.position, goal=(destination[0], max(6.0, destination[1]), destination[2]),
+            start=drone.position, goal=destination,
             drone=drone, strategy=self.strategy.value, payload_kg=drone.current_payload_kg,
         )
-        if not route.feasible:
-            return {"ok": False, "error": "Destination is blocked by hazards or no-fly zones.", "route": route.model_dump()}
+        if not route.feasible or not self.grid.is_route_valid(route):
+            return {"ok": False, "error": "Destination or route is blocked, unsafe, or outside the operating envelope.", "route": route.model_dump()}
 
         st = self.charging.select_available_station(drone, self.city)
-        rtb_pos = st.position if st else drone.home_position
-        rtb_e = compute_segment_energy_wh(destination, rtb_pos, drone, 0.0, self.city.weather, 5.0)
-        if drone.remaining_battery_wh - (route.estimated_energy_wh + rtb_e) < drone.battery_capacity_wh * CONFIG.safety_reserve_ratio:
+        rtb_target = st.position if st else drone.home_position
+        rtb_goal = (
+            rtb_target[0],
+            self.grid.safe_surface_altitude(rtb_target[0], rtb_target[2], rtb_target[1]),
+            rtb_target[2],
+        )
+        rtb_route = self.grid.plan_route(
+            start=route.waypoints[-1], goal=rtb_goal, drone=drone,
+            strategy=self.strategy.value, payload_kg=0.0,
+        )
+        if not rtb_route.feasible or not self.grid.is_route_valid(rtb_route):
+            return {"ok": False, "error": "No validated safe return route from destination.", "route": route.model_dump()}
+        if drone.remaining_battery_wh - (route.estimated_energy_wh + rtb_route.estimated_energy_wh) < drone.battery_capacity_wh * CONFIG.safety_reserve_ratio:
             return {"ok": False, "error": "Route violates 20% mandatory battery safety reserve.", "route": route.model_dump()}
 
         drone.current_route = route
@@ -504,6 +581,7 @@ class SimulationWorld:
             return {"ok": False, "error": f"Drone {drone_id} not found."}
 
         t0 = time.perf_counter()
+        self.charging.release_all(drone.id)
         released = self._release_drone_tasks(drone, reason=failure_type.value)
 
         if failure_type == FailureType.COMPLETE_DRONE_DESTRUCTION:
@@ -607,14 +685,22 @@ class SimulationWorld:
             else:
                 self.grid.rebuild()
             for d in self.drones.values():
-                if d.status == DroneStatus.IN_FLIGHT and d.current_route and not self.grid.is_route_valid(d.current_route):
+                if d.status in (DroneStatus.IN_FLIGHT, DroneStatus.RETURNING, DroneStatus.TAKING_OFF) and d.current_route and not self.grid.is_route_valid(d.current_route):
                     goal = d.current_route.waypoints[-1]
                     new_rt = self.grid.plan_route(start=d.position, goal=goal, drone=d, strategy=self.strategy.value, task_id=d.active_task_id, payload_kg=d.current_payload_kg)
-                    new_rt.replan_count = d.current_route.replan_count + 1
-                    d.current_route = new_rt
-                    d.waypoint_index = 1
-                    rerouted += 1
-                    self.route_history.append(new_rt.model_dump())
+                    if new_rt.feasible and self.grid.is_route_valid(new_rt):
+                        new_rt.replan_count = d.current_route.replan_count + 1
+                        d.current_route = new_rt
+                        d.waypoint_index = 1
+                        rerouted += 1
+                        self.route_history.append(new_rt.model_dump())
+                    else:
+                        if d.active_task_id:
+                            self._release_drone_tasks(d, reason="HAZARD_REPLAN_INFEASIBLE")
+                        d.current_route = None
+                        d.groundspeed_mps = 0.0
+                        d.status = DroneStatus.RETURNING if d.status == DroneStatus.RETURNING else DroneStatus.LOW_BATTERY
+                        self.log_event("replanning", "hazard_replan_rejected", f"No validated detour for {d.id}; flight held safely and task released.", entity_id=d.id)
             if rerouted > 0:
                 self.replanning_count += 1
                 self.log_event("replanning", "hazard_reroute", f"Hazard invalidated {rerouted} active flight path(s); safe detours computed.")

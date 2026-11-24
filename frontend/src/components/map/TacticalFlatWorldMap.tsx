@@ -39,8 +39,8 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
   title = "GLOBAL TACTICAL MONITOR — 7 NATIONS",
 }) => {
   const svgRef = useRef<SVGSVGElement>(null);
-  const [zoom, setZoom] = useState(2.2);
-  const [pan, setPan] = useState<{ x: number; y: number }>({ x: -1080, y: -180 });
+  const [view, setView] = useState({ zoom: 2.2, x: -1080, y: -180 });
+  const { zoom, x: panX, y: panY } = view;
   const [dragging, setDragging] = useState(false);
   const lastMouseRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const [layers, setLayers] = useState({
@@ -54,36 +54,37 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
 
   // Center-anchored zoom so zooming never jumps to top-left corner
   const applyZoom = (factor: number) => {
-    setZoom((prevZoom) => {
-      const nextZoom = Math.max(1.0, Math.min(7.0, prevZoom * factor));
-      const ratio = nextZoom / prevZoom;
-      setPan((p) => ({
-        x: 500 - (500 - p.x) * ratio,
-        y: 250 - (250 - p.y) * ratio,
-      }));
-      return nextZoom;
+    setView((prev) => {
+      const nextZoom = Math.max(1.0, Math.min(7.0, prev.zoom * factor));
+      const ratio = nextZoom / prev.zoom;
+      return {
+        zoom: nextZoom,
+        x: 500 - (500 - prev.x) * ratio,
+        y: 250 - (250 - prev.y) * ratio,
+      };
     });
   };
 
   const centerOnLatLon = (lat: number, lon: number, targetZoom = 3.0) => {
     const [px, py] = project(lat, lon);
-    setZoom(targetZoom);
-    setPan({ x: 500 - px * targetZoom, y: 250 - py * targetZoom });
+    setView({ zoom: targetZoom, x: 500 - px * targetZoom, y: 250 - py * targetZoom });
   };
 
-  // Auto-focus when selectedCountryId changes (including via JARVIS camera commands)
+  const hasCountries = countries.length > 0;
+
+  // Auto-focus on initial country load and subsequent selections. Depending on
+  // the boolean avoids re-centering whenever a telemetry snapshot replaces the
+  // countries array, so manual pan/zoom remains intact between selections.
   useEffect(() => {
     const sel = countries.find((c) => c.country_id === selectedCountryId);
     if (sel) {
       centerOnLatLon(sel.center.lat, sel.center.lon, Math.max(zoom, 2.4));
     }
-  }, [selectedCountryId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCountryId, hasCountries]);
 
   const focusTheater = () => centerOnLatLon(20.0, 79.0, 2.2);
-  const resetGlobal = () => {
-    setZoom(1.0);
-    setPan({ x: 0, y: 0 });
-  };
+  const resetGlobal = () => setView({ zoom: 1.0, x: 0, y: 0 });
 
   const handleMouseMove = (e: React.MouseEvent) => {
     if (!dragging || !svgRef.current) return;
@@ -93,7 +94,7 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
     const dx = (e.clientX - lastMouseRef.current.x) * scaleX;
     const dy = (e.clientY - lastMouseRef.current.y) * scaleY;
     lastMouseRef.current = { x: e.clientX, y: e.clientY };
-    setPan((p) => ({ x: p.x + dx, y: p.y + dy }));
+    setView((prev) => ({ ...prev, x: prev.x + dx, y: prev.y + dy }));
   };
 
   const handleWheel = (e: React.WheelEvent) => {
@@ -120,6 +121,7 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
             <button
               key={k}
               onClick={() => setLayers((prev) => ({ ...prev, [k]: !prev[k] }))}
+              aria-pressed={layers[k]}
               className={`px-2 py-0.5 rounded uppercase text-[10px] border transition ${
                 layers[k]
                   ? "bg-blue-50 border-blue-300 text-blue-800 font-medium"
@@ -157,7 +159,7 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
           <rect width="1000" height="500" fill="#E8F1F8" />
           <rect width="1000" height="500" fill="url(#gridPatternLight)" />
 
-          <g transform={`translate(${pan.x}, ${pan.y}) scale(${zoom})`}>
+          <g transform={`translate(${panX}, ${panY}) scale(${zoom})`}>
             {CONTINENT_PATHS.map((d, idx) => (
               <path key={idx} d={d} fill="#F4F6F2" stroke="#94A3B8" strokeWidth={0.9 / zoom} />
             ))}
@@ -170,7 +172,17 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
               return (
                 <g
                   key={c.country_id}
-                  className="cursor-pointer"
+                  className="cursor-pointer focus:outline-none"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`Select ${c.name} (${c.country_id})`}
+                  aria-pressed={isSel}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      onSelectCountry(c.country_id);
+                    }
+                  }}
                   onClick={(e) => {
                     e.stopPropagation();
                     onSelectCountry(c.country_id);
@@ -274,16 +286,16 @@ export const TacticalFlatWorldMap: React.FC<TacticalFlatWorldMapProps> = ({
         )}
 
         <div className="absolute bottom-3 right-3 flex flex-col gap-1 bg-white/95 border border-slate-300 rounded p-1 shadow-sm">
-          <button onClick={() => applyZoom(1.25)} className="p-1.5 hover:bg-slate-100 rounded text-slate-700" title="Zoom In">
+          <button type="button" aria-label="Zoom in" onClick={() => applyZoom(1.25)} className="p-1.5 hover:bg-slate-100 rounded text-slate-700" title="Zoom In">
             <Plus className="w-3.5 h-3.5" />
           </button>
-          <button onClick={() => applyZoom(0.8)} className="p-1.5 hover:bg-slate-100 rounded text-slate-700" title="Zoom Out">
+          <button type="button" aria-label="Zoom out" onClick={() => applyZoom(0.8)} className="p-1.5 hover:bg-slate-100 rounded text-slate-700" title="Zoom Out">
             <Minus className="w-3.5 h-3.5" />
           </button>
-          <button onClick={focusTheater} className="p-1.5 hover:bg-slate-100 rounded text-blue-700" title="Focus 7-Nation Theater">
+          <button type="button" aria-label="Focus 7-nation theater" onClick={focusTheater} className="p-1.5 hover:bg-slate-100 rounded text-blue-700" title="Focus 7-Nation Theater">
             <Crosshair className="w-3.5 h-3.5" />
           </button>
-          <button onClick={resetGlobal} className="p-1.5 hover:bg-slate-100 rounded text-slate-500" title="Reset Global View">
+          <button type="button" aria-label="Reset global view" onClick={resetGlobal} className="p-1.5 hover:bg-slate-100 rounded text-slate-500" title="Reset Global View">
             <RotateCcw className="w-3.5 h-3.5" />
           </button>
         </div>

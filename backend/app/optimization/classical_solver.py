@@ -71,6 +71,12 @@ def solve_classical(
                 continue
             if d.battery_percent < 24.0:
                 continue
+            ok, _, _ = is_drone_eligible_for_task(
+                d, task, city, grid, strategy="classical",
+                assigned_task_ids=list(d.assigned_task_ids) + [task.id], tasks=tasks,
+            )
+            if not ok:
+                continue
             cost = estimate_assignment_cost(d, task, city, sim_time_s)
             if math.isfinite(cost):
                 feasible_pairs[(di, ti)] = cost
@@ -111,7 +117,10 @@ def solve_classical(
                 if solver.Value(var) == 1:
                     d = eligible_drones[di]
                     t = pending[ti]
-                    ok, _, _ = is_drone_eligible_for_task(d, t, city, grid, strategy="classical")
+                    ok, _, _ = is_drone_eligible_for_task(
+                        d, t, city, grid, strategy="classical",
+                        assigned_task_ids=list(assignments[d.id]) + [t.id], tasks=tasks,
+                    )
                     if ok:
                         assignments[d.id].append(t.id)
                         total_obj += feasible_pairs[(di, ti)]
@@ -146,7 +155,10 @@ def solve_classical(
                     di, _ = slots[r]
                     d = eligible_drones[di]
                     t = pending[c]
-                    ok, _, _ = is_drone_eligible_for_task(d, t, city, grid, strategy="classical")
+                    ok, _, _ = is_drone_eligible_for_task(
+                        d, t, city, grid, strategy="classical",
+                        assigned_task_ids=list(assignments[d.id]) + [t.id], tasks=tasks,
+                    )
                     if ok:
                         assignments[d.id].append(t.id)
                         total_obj += feasible_pairs[(di, c)]
@@ -155,9 +167,31 @@ def solve_classical(
         else:
             missed = len(pending)
 
-    for did, tids in assignments.items():
-        if did in drones and len(tids) > 1:
-            assignments[did] = sequence_drone_tasks(drones[did], tids, tasks, sim_time_s)
+    accepted_new_tasks = set()
+    for did, tids in list(assignments.items()):
+        drone = drones.get(did)
+        if not drone:
+            assignments[did] = []
+            continue
+        ordered = sequence_drone_tasks(drone, tids, tasks, sim_time_s) if len(tids) > 1 else list(tids)
+        if drone.active_task_id in ordered:
+            ordered.remove(drone.active_task_id)
+            ordered.insert(0, drone.active_task_id)
+        accepted: List[str] = []
+        for tid in ordered:
+            task = tasks.get(tid)
+            if not task:
+                continue
+            ok, _, _ = is_drone_eligible_for_task(
+                drone, task, city, grid, strategy="classical",
+                assigned_task_ids=accepted + [tid], tasks=tasks,
+            )
+            if ok:
+                accepted.append(tid)
+                if any(task.id == pending_task.id for pending_task in pending):
+                    accepted_new_tasks.add(task.id)
+        assignments[did] = accepted
+    missed = len(pending) - len(accepted_new_tasks)
 
     runtime_ms = round((time.perf_counter() - t0) * 1000.0, 2)
     return OptimizationResult(

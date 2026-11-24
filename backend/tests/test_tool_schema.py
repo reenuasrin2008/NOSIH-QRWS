@@ -173,7 +173,7 @@ class TestToolSchemaAndHardening(unittest.TestCase):
             agent._tool_handlers["get_country_status"] = orig
 
     def test_07_reset_local_snapshots_endpoint_and_deque_routes(self) -> None:
-        resp = self.client.post("/api/world/reset-local-snapshots")
+        resp = self.client.post("/api/world/reset-local-snapshots", json={"confirm": "RESET_SNAPSHOTS"})
         self.assertEqual(resp.status_code, 200)
         body = resp.json()
         self.assertTrue(body["reset"])

@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { EffectComposer, Bloom, ToneMapping } from "@react-three/postprocessing";
@@ -9,7 +9,8 @@ export interface JarvisNeuralCore3DProps {
   listening: boolean;
   speaking: boolean;
   thinking: boolean;
-  audioLevel: number; // 0.0 - 1.0 from real Web Audio API mic analyser or TTS cadence
+  audioLevel?: number; // Static fallback; live callers should provide audioLevelRef.
+  audioLevelRef?: RefObject<number>;
   statusLabel?: string;
   optimizing?: boolean;
   awaitingApproval?: boolean;
@@ -267,6 +268,7 @@ const NeuralCoreMesh: React.FC<NeuralCoreMeshProps> = ({
   optimizing,
   awaitingApproval,
   audioLevel,
+  audioLevelRef,
   palette,
   reducedMotion,
 }) => {
@@ -391,7 +393,8 @@ const NeuralCoreMesh: React.FC<NeuralCoreMeshProps> = ({
     const dt = Number.isFinite(delta) ? Math.min(Math.max(delta, 0), 0.05) : 0.016;
     const t = state.clock.elapsedTime;
     const motionScale = reducedMotion ? 0.18 : 1.0;
-    const safeAudioLevel = Number.isFinite(audioLevel) ? Math.max(0, Math.min(1, audioLevel)) : 0;
+    const currentAudioLevel = audioLevelRef?.current ?? audioLevel ?? 0;
+    const safeAudioLevel = Number.isFinite(currentAudioLevel) ? Math.max(0, Math.min(1, currentAudioLevel)) : 0;
 
     const synthWave = speaking
       ? 0.42 + Math.abs(Math.sin(t * 9.8)) * 0.45 + Math.abs(Math.cos(t * 5.3)) * 0.13

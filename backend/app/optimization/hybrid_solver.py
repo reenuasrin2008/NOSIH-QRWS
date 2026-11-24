@@ -34,8 +34,8 @@ def solve_hybrid(
     try:
         q_res = solve_quantum_qaoa(drones, tasks, city, grid, sim_time_s, seed=seed)
     except Exception as exc:
-        errors.append(f"QAOA refinement error: {exc}")
-        fallback_used = "Retained classical baseline (QAOA unavailable)"
+        errors.append(f"Quantum-inspired QUBO refinement error: {exc}")
+        fallback_used = "Retained classical baseline (quantum-inspired QUBO unavailable)"
 
     chosen = classical_res
     if q_res is not None and q_res.feasible:

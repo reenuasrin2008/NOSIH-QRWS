@@ -105,9 +105,17 @@ class AIKeyPool:
         chosen.request_count += 1
         return chosen
 
+    def _redact_error(self, error_msg: str) -> str:
+        text = str(error_msg or "unknown error")
+        for records in self.keys.values():
+            for record in records:
+                if record.secret:
+                    text = text.replace(record.secret, "[REDACTED]")
+        return text[:300]
+
     def record_error(self, key: KeyRecord, error_msg: str, is_rate_limit: bool = False) -> None:
         key.error_count += 1
-        key.last_error = str(error_msg or "unknown error")[:180]
+        key.last_error = self._redact_error(error_msg)
         if is_rate_limit:
             key.rate_limit_events += 1
         backoff = min(300.0, 10.0 * (2 ** min(4, key.error_count - 1)))
@@ -148,7 +156,7 @@ class AIKeyPool:
                 "total_requests": sum(k.request_count for k in recs),
                 "total_errors": sum(k.error_count for k in recs),
                 "last_error": next((k.last_error for k in recs if k.last_error), None),
-                "model": os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", "not-configured"),
+                "model": os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", "").strip() or ("gemini-2.5-flash" if prov == "gemini" else "grok-3"),
             }
         return out
 
@@ -231,7 +239,7 @@ class GeminiAdapter(AIProvider):
         model: str,
         tools: Optional[List[Dict[str, Any]]] = None,
     ) -> str:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload: Dict[str, Any] = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
@@ -240,7 +248,7 @@ class GeminiAdapter(AIProvider):
         if tools:
             payload["tools"] = tools
         client = self.http_pool.get_client()
-        resp = await client.post(url, json=payload)
+        resp = await client.post(url, json=payload, headers={"x-goog-api-key": api_key})
         resp.raise_for_status()
         try:
             data = resp.json()
@@ -380,7 +388,8 @@ class AIProviderManager:
                 provider_order.append(prov)
 
         for prov in provider_order:
-            model = os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", "").strip()
+            default_model = "gemini-2.5-flash" if prov == "gemini" else "grok-3"
+            model = os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", default_model).strip() or default_model
             if not model:
                 continue
             max_attempts = max(1, len(self.key_pool.keys.get(prov, [])))

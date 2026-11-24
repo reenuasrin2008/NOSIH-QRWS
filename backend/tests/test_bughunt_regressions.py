@@ -209,6 +209,24 @@ class TestBugHuntRegressions(unittest.TestCase):
         self.assertEqual(reply["provider"], "local_deterministic_orchestrator")
         self.assertIn("Medical grid", reply["assistant_message"])
 
+    def test_llm_polish_omits_redundant_tool_schemas(self) -> None:
+        agent = global_services.jarvis
+        with patch.object(
+            agent.provider_manager,
+            "synthesize_narrative",
+            new=AsyncMock(return_value={
+                "text": "Grounded provider summary",
+                "provider_used": "gemini",
+                "model_used": "gemini-2.5-flash",
+            }),
+        ) as synthesize:
+            reply = asyncio.run(
+                agent.process_command("show hospital status in COUNTRY-03", session_id="polish-tools", use_llm_polish=True)
+            )
+        self.assertEqual(reply["provider"], "gemini")
+        self.assertEqual(reply["assistant_message"], "Grounded provider summary")
+        self.assertNotIn("tool_schemas", synthesize.call_args.kwargs)
+
     def test_chat_stream_emits_sse_error_event_on_exception(self) -> None:
         with patch.object(
             global_services.jarvis,

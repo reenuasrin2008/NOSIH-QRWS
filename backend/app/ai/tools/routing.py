@@ -37,8 +37,12 @@ def build_handlers(
 
     def _compare_drones_to_destination(args: Dict[str, Any]) -> Dict[str, Any]:
         cid = _cid(world, args)
+        if args.get("hospital_id") and args["hospital_id"] not in world.hospitals:
+            return {"status": "ERROR", "tool": "compare_drones_to_destination", "error": f"Unknown hospital_id: {args['hospital_id']}", "category": "routing"}
+        if args.get("hospital_id") and args.get("country_id") and world.hospitals[args["hospital_id"]].country_id != args["country_id"]:
+            return {"status": "ERROR", "tool": "compare_drones_to_destination", "error": "hospital_id does not belong to country_id", "category": "routing"}
         target_h = None
-        if args.get("hospital_id") and args["hospital_id"] in world.hospitals:
+        if args.get("hospital_id"):
             target_h = world.hospitals[args["hospital_id"]]
         else:
             hospitals = [h for h in world.hospitals.values() if h.country_id == cid]
@@ -62,6 +66,8 @@ def build_handlers(
         cid = _cid(world, args)
         c = world.countries[cid].center
         raw_pts = args.get("points")
+        if raw_pts is not None and (not isinstance(raw_pts, list) or not 1 <= len(raw_pts) <= 50):
+            return {"status": "ERROR", "tool": "plan_multistop_mission", "error": "points must contain between 1 and 50 waypoints", "category": "routing"}
         if raw_pts and isinstance(raw_pts, list):
             pts = [
                 GeoPoint(lat=float(p["lat"]), lon=float(p["lon"]), elevation_m=float(p.get("elevation_m", 85.0)))

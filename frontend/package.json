@@ -11,8 +11,8 @@
     "dev:control": "vite --config vite.control.config.ts",
     "dev:jarvis": "vite --config vite.jarvis.config.ts",
     "build": "tsc && vite build --config vite.scene.config.ts",
-    "build:operations": "vite build --config vite.control.config.ts --outDir dist-operations",
-    "build:jarvis": "vite build --config vite.jarvis.config.ts --outDir dist-jarvis",
+    "build:operations": "tsc && vite build --config vite.control.config.ts --outDir dist-operations",
+    "build:jarvis": "tsc && vite build --config vite.jarvis.config.ts --outDir dist-jarvis",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -34,9 +34,9 @@
     "@types/three": "^0.169.0",
     "@vitejs/plugin-react": "^4.3.2",
     "autoprefixer": "^10.4.20",
-    "postcss": "^10.4.47",
+    "postcss": "^8.4.47",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.3",
-    "vite": "^5.4.8"
+    "vite": "^6.4.6"
   }
 }

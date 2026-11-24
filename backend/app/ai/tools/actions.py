@@ -37,7 +37,21 @@ def build_handlers(
     def _prepare_drone_failure(args: Dict[str, Any]) -> Dict[str, Any]:
         cid = args.get("country_id") or world.selected_country_id
         target_d = args.get("drone_id")
-        if not target_d or target_d not in world.drones:
+        if target_d and target_d not in world.drones:
+            return {
+                "status": "ERROR",
+                "tool": "prepare_drone_failure",
+                "error": f"Unknown drone_id: {target_d}",
+                "category": "action",
+            }
+        if target_d and args.get("country_id") and world.drones[target_d].country_id != args["country_id"]:
+            return {
+                "status": "ERROR",
+                "tool": "prepare_drone_failure",
+                "error": "drone_id does not belong to country_id",
+                "category": "action",
+            }
+        if not target_d:
             target_d = next(
                 (d.drone_id for d in world.drones.values() if d.country_id == cid),
                 next(iter(world.drones.keys()), None),

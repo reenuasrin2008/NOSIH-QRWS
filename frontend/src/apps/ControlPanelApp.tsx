@@ -201,7 +201,7 @@ export const ControlPanelApp: React.FC = () => {
 
         <div className="flex items-center gap-1.5">
           <a
-            href="http://localhost:5173"
+            href="/?mode=scene"
             target="_blank"
             rel="noreferrer"
             className="px-2.5 py-1 bg-blue-950/60 hover:bg-blue-900/70 border border-blue-700/80 text-blue-200 flex items-center gap-1.5 font-semibold"
@@ -523,7 +523,7 @@ export const ControlPanelApp: React.FC = () => {
                         {qMetrics?.backend_name || "QAOA — Classical quantum-circuit simulation"}
                       </div>
                       <div className="text-[10px] text-zinc-400 mt-1">
-                        Executes real QAOA circuit on reduced critical-task QUBO subproblem (4–8 qubits) with deterministic classical repair.
+                        Runs a quantum-inspired QUBO demo on a reduced critical-task subproblem with deterministic classical validation.
                       </div>
                     </div>
                     {qMetrics?.executed ? (
@@ -544,7 +544,7 @@ export const ControlPanelApp: React.FC = () => {
                       </div>
                     ) : (
                       <div className="p-3 bg-[#090d14] border border-[#222c3c] text-zinc-400">
-                        Press RUN ALL 4 STRATEGIES to inspect live QAOA circuit telemetry.
+                        Press RUN ALL 4 STRATEGIES to inspect live quantum-inspired solver telemetry.
                       </div>
                     )}
                   </div>
@@ -664,7 +664,7 @@ export const ControlPanelApp: React.FC = () => {
         </div>
       )}
 
-      <FailureInjectionModal />
+      <FailureInjectionModal selectedDroneId={selectedDrone?.id ?? null} />
       <ExperimentHistoryModal />
       <SettingsModal />
       <ShortcutsModal />

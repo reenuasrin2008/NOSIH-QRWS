@@ -1,4 +1,7 @@
 from __future__ import annotations
+import math
+import os
+import threading
 import uuid
 from collections import deque
 from datetime import datetime, timedelta, timezone
@@ -15,6 +18,10 @@ from app.world.global_models import (
     SwarmMode,
     SwarmOperation,
 )
+
+
+MAX_APPROVAL_WORLD_VERSION_DRIFT = max(50, int(os.getenv("QR_APPROVAL_MAX_VERSION_DRIFT", "500")))
+MAX_APPROVALS = max(100, int(os.getenv("QR_MAX_APPROVALS", "2000")))
 
 
 PLAYBOOK_CATALOG: List[Dict[str, str]] = [
@@ -52,6 +59,7 @@ class ApprovalEngine:
         self.world = world
         self.approvals: Dict[str, ApprovalRequest] = {}
         self.audit_log: deque = deque(maxlen=5000)
+        self._approval_lock = threading.RLock()
 
     def _log_audit(self, action: str, actor: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({
@@ -62,6 +70,74 @@ class ApprovalEngine:
             "actor": actor,
             "details": details,
         })
+
+    def _validate_parameters(self, operation_type: str, parameters: Dict[str, Any]) -> None:
+        allowed = {
+            "inject_disaster": {"country_id", "disaster_type", "name", "lat", "lon", "severity", "radius_km", "wind_kph", "rainfall_mm_hr", "require_approval"},
+            "deploy_swarm": {"country_id", "drone_count", "mode", "formation", "objective", "name", "lat", "lon", "coverage_radius_km"},
+            "dispatch_ambulances": {"count"},
+            "cross_country_aid": {"target_country_id", "donor_country_id", "resource_type", "quantity"},
+            "destroy_drone": {"drone_id", "failure_type"},
+            "comprehensive_rescue_plan": {"drones", "ambulances", "plan_id"},
+        }.get(operation_type, set())
+        unknown = set(parameters) - allowed
+        if unknown:
+            raise ValueError(f"Unsupported approval parameters: {', '.join(sorted(unknown))}")
+
+        def number(name: str, low: float, high: float) -> None:
+            if name not in parameters:
+                return
+            value = float(parameters[name])
+            if not math.isfinite(value) or not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+
+        def integer(name: str, low: int, high: int) -> None:
+            if name not in parameters:
+                return
+            value = int(parameters[name])
+            if not low <= value <= high:
+                raise ValueError(f"{name} must be between {low} and {high}")
+
+        if operation_type == "inject_disaster":
+            DisasterType(parameters.get("disaster_type", "FLOOD"))
+            number("severity", 0.1, 1.0)
+            number("radius_km", 1.0, 50.0)
+            number("wind_kph", 0.0, 500.0)
+            number("rainfall_mm_hr", 0.0, 1000.0)
+        elif operation_type == "deploy_swarm":
+            integer("drone_count", 1, 30)
+            SwarmMode(parameters.get("mode", "AREA_SCAN"))
+            SwarmFormation(parameters.get("formation", "SEARCH_GRID"))
+            number("coverage_radius_km", 0.5, 50.0)
+        elif operation_type == "dispatch_ambulances":
+            integer("count", 1, 50)
+        elif operation_type == "cross_country_aid":
+            integer("quantity", 1, 50)
+            if parameters.get("resource_type", "ambulances") not in {"ambulances", "drones", "food"}:
+                raise ValueError("resource_type must be ambulances, drones, or food")
+        elif operation_type == "comprehensive_rescue_plan":
+            integer("drones", 1, 30)
+            integer("ambulances", 1, 50)
+
+    def _validate_approval(self, req: ApprovalRequest) -> None:
+        expires_at = datetime.fromisoformat(req.expires_at)
+        if expires_at <= datetime.now(timezone.utc):
+            raise ValueError(f"Approval {req.approval_id} has expired")
+        drift = self.world.event_bus.world_version - req.world_version_at_proposal
+        if drift > MAX_APPROVAL_WORLD_VERSION_DRIFT:
+            raise ValueError(f"Approval {req.approval_id} is stale; prepare a new request")
+        self._validate_parameters(req.operation_type, req.parameters or {})
+
+    def _prune_approvals(self) -> None:
+        now = datetime.now(timezone.utc)
+        expired = [
+            aid for aid, req in self.approvals.items()
+            if datetime.fromisoformat(req.expires_at) <= now
+        ]
+        for aid in expired:
+            self.approvals.pop(aid, None)
+        while len(self.approvals) >= MAX_APPROVALS:
+            self.approvals.pop(next(iter(self.approvals)), None)
 
     def create_approval_request(
         self,
@@ -78,6 +154,8 @@ class ApprovalEngine:
     ) -> ApprovalRequest:
         aid = f"APR-{uuid.uuid4().hex[:8].upper()}"
         now = datetime.now(timezone.utc)
+        self._prune_approvals()
+        self._validate_parameters(operation_type, parameters or {})
         req = ApprovalRequest(
             approval_id=aid,
             operation_type=operation_type,
@@ -116,19 +194,22 @@ class ApprovalEngine:
         return [to_dict(a) for a in reversed(items)]
 
     def modify_pending(self, approval_id: str, updates: Dict[str, Any], actor: str = "operator") -> ApprovalRequest:
-        if not approval_id or approval_id not in self.approvals:
-            raise ValueError(f"Unknown approval_id: {approval_id}")
-        if not isinstance(updates, dict):
-            raise ValueError("updates must be a JSON object")
-        req = self.approvals[approval_id]
-        if req.status not in ("PENDING", "MODIFIED"):
-            raise ValueError(f"Cannot modify approval {approval_id} in status {req.status}")
-        req.parameters.update(updates)
-        req.status = "PENDING"
-        req.world_version_at_proposal = self.world.event_bus.world_version
-        req.decision_note = f"Modified by {actor}"
-        self._log_audit("approval.modified", actor, {"approval_id": approval_id, "updates": updates})
-        return req
+        with self._approval_lock:
+            if not approval_id or approval_id not in self.approvals:
+                raise ValueError(f"Unknown approval_id: {approval_id}")
+            if not isinstance(updates, dict):
+                raise ValueError("updates must be a JSON object")
+            req = self.approvals[approval_id]
+            if req.status not in ("PENDING", "MODIFIED"):
+                raise ValueError(f"Cannot modify approval {approval_id} in status {req.status}")
+            merged = {**(req.parameters or {}), **updates}
+            self._validate_parameters(req.operation_type, merged)
+            req.parameters = merged
+            req.status = "PENDING"
+            req.world_version_at_proposal = self.world.event_bus.world_version
+            req.decision_note = f"Modified by {actor}"
+            self._log_audit("approval.modified", actor, {"approval_id": approval_id, "updates": updates})
+            return req
 
     def reject(self, approval_id: str, actor: str = "operator", reason: str = "Rejected by operator") -> ApprovalRequest:
         if not approval_id or approval_id not in self.approvals:
@@ -144,25 +225,31 @@ class ApprovalEngine:
         return req
 
     def approve_and_execute(self, approval_id: str, actor: str = "operator", auto_execute: bool = True) -> ApprovalRequest:
-        if not approval_id or approval_id not in self.approvals:
-            raise ValueError(f"Unknown approval_id: {approval_id}")
-        req = self.approvals[approval_id]
-        if req.status not in ("PENDING", "APPROVED"):
-            raise ValueError(f"Approval {approval_id} cannot be approved from status {req.status}")
-        if req.status == "APPROVED" and not auto_execute:
-            raise ValueError(f"Approval {approval_id} is already APPROVED")
+        with self._approval_lock:
+            if not approval_id or approval_id not in self.approvals:
+                raise ValueError(f"Unknown approval_id: {approval_id}")
+            req = self.approvals[approval_id]
+            if req.status not in ("PENDING", "APPROVED"):
+                raise ValueError(f"Approval {approval_id} cannot be approved from status {req.status}")
+            if req.status == "APPROVED" and not auto_execute:
+                raise ValueError(f"Approval {approval_id} is already APPROVED")
+            self._validate_approval(req)
 
-        if req.status == "PENDING":
-            req.status = "APPROVED"
-            req.decided_by = actor
-            self._log_audit("approval.granted", actor, {"approval_id": approval_id, "operation_type": req.operation_type})
-            self.world.event_bus.emit("approval.granted", payload=to_dict(req), country_id=req.country_id, entity_id=approval_id, category="approval", bump_version=False)
+            if req.status == "PENDING":
+                req.status = "APPROVED"
+                req.decided_by = actor
+                self._log_audit("approval.granted", actor, {"approval_id": approval_id, "operation_type": req.operation_type})
+                self.world.event_bus.emit("approval.granted", payload=to_dict(req), country_id=req.country_id, entity_id=approval_id, category="approval", bump_version=False)
 
-        if auto_execute:
-            return self.execute_approved(approval_id, actor=actor)
-        return req
+            if auto_execute:
+                return self._execute_approved_locked(approval_id, actor=actor)
+            return req
 
     def execute_approved(self, approval_id: str, actor: str = "operator") -> ApprovalRequest:
+        with self._approval_lock:
+            return self._execute_approved_locked(approval_id, actor=actor)
+
+    def _execute_approved_locked(self, approval_id: str, actor: str = "operator") -> ApprovalRequest:
         if not approval_id or approval_id not in self.approvals:
             raise ValueError(f"Unknown approval_id: {approval_id}")
         req = self.approvals[approval_id]
@@ -174,9 +261,10 @@ class ApprovalEngine:
         cid = req.country_id or p.get("country_id") or self.world.selected_country_id
         if cid not in self.world.countries:
             raise ValueError(f"Unknown country_id: {cid}")
+        self._validate_approval(req)
+        req.status = "EXECUTING"
 
         with self.world._mutation_lock:
-            req.status = "EXECUTING"
             result: Dict[str, Any] = {}
             try:
                 if op == "inject_disaster":
@@ -202,6 +290,8 @@ class ApprovalEngine:
                     ]
                     avail.sort(key=lambda d: d.battery_pct, reverse=True)
                     chosen = avail[:count]
+                    if not chosen:
+                        raise ValueError("No available drones meet the swarm battery requirement")
                     sw_id = f"SWARM-{uuid.uuid4().hex[:6].upper()}"
                     c_center = self.world.countries[cid].center
                     t_loc = GeoPoint(lat=float(p.get("lat", c_center.lat)), lon=float(p.get("lon", c_center.lon)), elevation_m=95.0)
@@ -231,6 +321,10 @@ class ApprovalEngine:
                     count = max(1, int(p.get("count", 6)))
                     avail = [a for a in self.world.ambulances.values() if a.country_id == cid and a.status == AmbulanceStatus.AVAILABLE]
                     hospitals = [h for h in self.world.hospitals.values() if h.country_id == cid and h.available_beds > 0]
+                    if not hospitals:
+                        raise ValueError("No hospital with available beds can receive ambulances")
+                    if not avail:
+                        raise ValueError("No available ambulances for dispatch")
                     hospitals.sort(key=lambda h: h.available_beds, reverse=True)
                     dispatched_ids = []
                     for idx, amb in enumerate(avail[:count]):
@@ -268,6 +362,8 @@ class ApprovalEngine:
                             donor_whs[0].food_packages -= amt
                             recv_whs[0].food_packages += amt
                             transferred.append(f"{amt}_food_packages")
+                    if not transferred:
+                        raise ValueError("No requested resources are available for transfer")
                     self.world.event_bus.emit("mutual_aid.executed", payload={"from": donor_id, "to": cid, "resource_type": res_type, "transferred": transferred}, country_id=cid, category="logistics")
                     result = {"donor_country_id": donor_id, "recipient_country_id": cid, "resource_type": res_type, "transferred": transferred}
 
@@ -278,13 +374,21 @@ class ApprovalEngine:
                     result = self.world.inject_drone_failure(drone_id, p.get("failure_type", "COMPLETE_DRONE_DESTRUCTION"))
 
                 elif op == "comprehensive_rescue_plan":
+                    drone_count = int(p.get("drones", 8))
+                    ambulance_count = int(p.get("ambulances", 10))
+                    if not any(d.country_id == cid and d.status == "AVAILABLE" and d.battery_pct >= 35.0 for d in self.world.drones.values()):
+                        raise ValueError("No available drones meet the rescue-plan battery requirement")
+                    if not any(a.country_id == cid and a.status == AmbulanceStatus.AVAILABLE for a in self.world.ambulances.values()):
+                        raise ValueError("No available ambulances for the rescue plan")
+                    if not any(h.country_id == cid and h.available_beds > 0 for h in self.world.hospitals.values()):
+                        raise ValueError("No hospital with available beds for the rescue plan")
                     # Execute coordinated multi-subsystem rescue plan (swarm + ambulances + shelter activation)
                     sw_res = self.approve_and_execute(
-                        self.create_approval_request("deploy_swarm", "Sub-Op: Swarm", "Swarm", cid, {"drone_count": int(p.get("drones", 8)), "mode": "COORDINATED_RESCUE", "formation": "SEARCH_GRID"}).approval_id,
+                        self.create_approval_request("deploy_swarm", "Sub-Op: Swarm", "Swarm", cid, {"drone_count": drone_count, "mode": "COORDINATED_RESCUE", "formation": "SEARCH_GRID"}).approval_id,
                         actor=actor,
                     )
                     amb_res = self.approve_and_execute(
-                        self.create_approval_request("dispatch_ambulances", "Sub-Op: Ambulances", "Ambulances", cid, {"count": int(p.get("ambulances", 10))}).approval_id,
+                        self.create_approval_request("dispatch_ambulances", "Sub-Op: Ambulances", "Ambulances", cid, {"count": ambulance_count}).approval_id,
                         actor=actor,
                     )
                     activated_shelters = []

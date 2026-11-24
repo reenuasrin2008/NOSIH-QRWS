@@ -242,7 +242,7 @@ export const RightSidebar: React.FC = () => {
               </>
             ) : (
               <div className="p-3 bg-[#0b0e14] border border-[#242c3a] text-zinc-400 text-[11px]">
-                Run a Quantum or Hybrid optimization (or press RUN ALL STRATEGIES) to inspect live QAOA circuit telemetry.
+                Run a Quantum or Hybrid optimization (or press RUN ALL STRATEGIES) to inspect live quantum-inspired solver telemetry.
               </div>
             )}
           </div>

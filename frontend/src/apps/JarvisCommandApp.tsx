@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
   ChevronDown,
@@ -32,6 +32,7 @@ import type {
   JarvisReply,
   ProviderStatusPayload,
 } from "../shared/globalTypes";
+import { useTelemetryRefresh } from "../hooks/useTelemetryRefresh";
 
 const QUICK_COMMANDS = [
   "Analyze the situation in Country 3",
@@ -45,8 +46,8 @@ const QUICK_COMMANDS = [
 type DockTab = "logs" | "command" | "tools" | "approvals" | "voice" | null;
 
 interface HealthInvariants {
-  approvalGated: boolean;
-  zeroDatabase: boolean;
+  approvalGated: boolean | null;
+  zeroDatabase: boolean | null;
   toolCount: number | null;
 }
 
@@ -58,6 +59,13 @@ interface LatencyStats {
 }
 
 const WAVEFORM_BAR_COUNT = 28;
+
+function paintWaveform(container: HTMLDivElement | null, bars: number[]) {
+  if (!container) return;
+  Array.from(container.children).forEach((bar, index) => {
+    (bar as HTMLElement).style.height = `${Math.round((bars[index] ?? 0.14) * 100)}%`;
+  });
+}
 
 function formatFrontendCommandChip(cmd: Record<string, any>): string {
   const action = cmd.action || cmd.command || cmd.type || "ui.command";
@@ -80,6 +88,7 @@ export const JarvisCommandApp: React.FC = () => {
   const [events, setEvents] = useState<any[]>([]);
   const [toolLogs, setToolLogs] = useState<any[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [toolSchemas, setToolSchemas] = useState<Record<string, { required?: string[] }>>({});
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [messages, setMessages] = useState<JarvisReply[]>([]);
   const [input, setInput] = useState("");
@@ -88,8 +97,8 @@ export const JarvisCommandApp: React.FC = () => {
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
   const [healthInvariants, setHealthInvariants] = useState<HealthInvariants>({
-    approvalGated: true,
-    zeroDatabase: true,
+    approvalGated: null,
+    zeroDatabase: null,
     toolCount: null,
   });
   const [latencyStats, setLatencyStats] = useState<LatencyStats>({
@@ -114,10 +123,6 @@ export const JarvisCommandApp: React.FC = () => {
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceName, setSelectedVoiceName] = useState("");
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
-  const [audioLevel, setAudioLevel] = useState(0);
-  const [waveformBars, setWaveformBars] = useState<number[]>(
-    () => Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14)
-  );
 
   // Inline reply interactions: Explain, Modify Approval, Decision status
   const [expandedExplainIds, setExpandedExplainIds] = useState<Record<string, boolean>>({});
@@ -140,6 +145,7 @@ export const JarvisCommandApp: React.FC = () => {
   const [runningTool, setRunningTool] = useState<string | null>(null);
 
   const recognitionRef = useRef<any>(null);
+  const voiceEnabledRef = useRef(false);
   const micStreamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -149,8 +155,18 @@ export const JarvisCommandApp: React.FC = () => {
   const micSessionIdRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
   const telemetryAbortRef = useRef<AbortController | null>(null);
+  const audioLevelRef = useRef(0);
+  const waveformRef = useRef<HTMLDivElement | null>(null);
   const voiceModeRef = useRef(voiceMode);
+  const overviewVersionRef = useRef(-1);
   voiceModeRef.current = voiceMode;
+
+  const applyOverview = useCallback((next: GlobalOverview) => {
+    const version = Number(next?.clock?.world_version);
+    if (Number.isFinite(version) && version < overviewVersionRef.current) return;
+    if (Number.isFinite(version)) overviewVersionRef.current = version;
+    setOverview(next);
+  }, []);
 
   const cleanupAudioPipeline = () => {
     micSessionIdRef.current += 1;
@@ -167,24 +183,28 @@ export const JarvisCommandApp: React.FC = () => {
       audioCtxRef.current = null;
     }
     if (isMountedRef.current) {
-      setAudioLevel(0);
-      setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
+      audioLevelRef.current = 0;
+      paintWaveform(waveformRef.current, Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
     }
   };
 
-  const refreshMeta = () => {
-    const signal = abortControllerRef.current?.signal;
-    globalApi.getOverview().then((d) => { if (isMountedRef.current) setOverview(d); }).catch(() => {});
-    globalApi.getProvidersStatus().then((d) => { if (isMountedRef.current) setProviders(d); }).catch(() => {});
-    globalApi.getGlobalDrones().then((r) => { if (isMountedRef.current) setAllDrones(r.drones); }).catch(() => {});
-    fetch("/api/hospitals", { signal })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => { if (isMountedRef.current) setAllHospitals(d.hospitals || []); })
-      .catch(() => {});
-    globalApi.getEvents(50).then((r) => { if (isMountedRef.current) setEvents(r.events); }).catch(() => {});
-    globalApi.getAuditLogs().then((r) => { if (isMountedRef.current) setToolLogs(r.tool_logs || []); }).catch(() => {});
-    globalApi.getApprovals().then((r) => { if (isMountedRef.current) setApprovals(r.approvals || []); }).catch(() => {});
-  };
+  const refreshMeta = useCallback(async (signal: AbortSignal) => {
+    const isCurrent = () => isMountedRef.current && !signal.aborted;
+    await Promise.all([
+      globalApi.getOverview().then((d) => { if (isCurrent()) applyOverview(d); }).catch(() => {}),
+      globalApi.getProvidersStatus().then((d) => { if (isCurrent()) setProviders(d); }).catch(() => {}),
+      globalApi.getGlobalDrones().then((r) => { if (isCurrent()) setAllDrones(r.drones); }).catch(() => {}),
+      fetch("/api/hospitals", { signal })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
+        .then((d) => { if (isCurrent()) setAllHospitals(d.hospitals || []); })
+        .catch(() => {}),
+      globalApi.getEvents(50).then((r) => { if (isCurrent()) setEvents(r.events); }).catch(() => {}),
+      globalApi.getAuditLogs().then((r) => { if (isCurrent()) setToolLogs(r.tool_logs || []); }).catch(() => {}),
+      globalApi.getApprovals().then((r) => { if (isCurrent()) setApprovals(r.approvals || []); }).catch(() => {}),
+    ]);
+  }, [applyOverview]);
+
+  const requestRefresh = useTelemetryRefresh(refreshMeta);
 
   const pollHealthAndLatency = () => {
     telemetryAbortRef.current?.abort();
@@ -198,9 +218,11 @@ export const JarvisCommandApp: React.FC = () => {
         if (!isMountedRef.current || signal.aborted) return;
         const inv = d?.invariants && typeof d.invariants === "object" ? d.invariants : {};
         const rawTools = d?.tool_count ?? d?.tools_count ?? inv?.tool_count ?? null;
+        const approvalGated = inv?.approval_gated ?? d?.approval_gated;
+        const zeroDatabase = inv?.zero_database ?? d?.zero_database;
         setHealthInvariants({
-          approvalGated: Boolean(inv?.approval_gated ?? d?.approval_gated ?? true),
-          zeroDatabase: Boolean(inv?.zero_database ?? d?.zero_database ?? true),
+          approvalGated: typeof approvalGated === "boolean" ? approvalGated : null,
+          zeroDatabase: typeof zeroDatabase === "boolean" ? zeroDatabase : null,
           toolCount: typeof rawTools === "number" && Number.isFinite(rawTools) ? rawTools : null,
         });
       })
@@ -230,11 +252,15 @@ export const JarvisCommandApp: React.FC = () => {
     const ac = new AbortController();
     abortControllerRef.current = ac;
 
-    refreshMeta();
     pollHealthAndLatency();
-    fetch("/api/ai/tools", { signal: ac.signal })
+    fetch("/api/ai/tools/schemas", { signal: ac.signal })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`))))
-      .then((d) => { if (isMountedRef.current) setAvailableTools(Object.keys(d.tools || {})); })
+      .then((d) => {
+        if (!isMountedRef.current) return;
+        const schemas = Array.isArray(d.schemas) ? d.schemas : [];
+        setAvailableTools(schemas.map((schema: any) => schema.name));
+        setToolSchemas(Object.fromEntries(schemas.map((schema: any) => [schema.name, schema.parameters || {}])));
+      })
       .catch(() => {});
 
     let loadVoices: (() => void) | null = null;
@@ -256,10 +282,10 @@ export const JarvisCommandApp: React.FC = () => {
       onConnectionChange: (c) => { if (isMountedRef.current) setWsConnected(c); },
       onSnapshot: (snap) => {
         if (!isMountedRef.current) return;
-        if (snap.overview) setOverview(snap.overview);
-        if (snap.providers) setProviders(snap.providers);
+        if (snap.overview) applyOverview(snap.overview);
+        requestRefresh();
       },
-      onWorldEvent: () => refreshMeta(),
+      onWorldEvent: () => requestRefresh(),
     });
 
     return () => {
@@ -281,6 +307,7 @@ export const JarvisCommandApp: React.FC = () => {
         recognitionRef.current = null;
       }
       cleanupAudioPipeline();
+      voiceEnabledRef.current = false;
       if (speakWaveRafRef.current !== null) {
         cancelAnimationFrame(speakWaveRafRef.current);
         speakWaveRafRef.current = null;
@@ -292,7 +319,7 @@ export const JarvisCommandApp: React.FC = () => {
         window.speechSynthesis.cancel();
       }
     };
-  }, []);
+  }, [requestRefresh, applyOverview]);
 
   // Animate clean silver waveform cadence while JARVIS is speaking (and not listening)
   useEffect(() => {
@@ -308,8 +335,8 @@ export const JarvisCommandApp: React.FC = () => {
               Math.abs(Math.sin(t * 7.2 + i * 0.45) * Math.cos(t * 3.1 - i * 0.22));
           return Math.min(1, Math.max(0.14, wave));
         });
-        setWaveformBars(bars);
-        setAudioLevel(0.45 + Math.abs(Math.sin(t * 6.5)) * 0.35);
+        paintWaveform(waveformRef.current, bars);
+        audioLevelRef.current = 0.45 + Math.abs(Math.sin(t * 6.5)) * 0.35;
         speakWaveRafRef.current = requestAnimationFrame(step);
       };
       speakWaveRafRef.current = requestAnimationFrame(step);
@@ -320,8 +347,8 @@ export const JarvisCommandApp: React.FC = () => {
         }
       };
     } else if (!listening) {
-      setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
-      setAudioLevel(0);
+      audioLevelRef.current = 0;
+      paintWaveform(waveformRef.current, Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
     }
   }, [speaking, listening]);
 
@@ -379,7 +406,7 @@ export const JarvisCommandApp: React.FC = () => {
         setCandidateRoutes(routeCard.data.all_candidate_routes);
       }
       speakText(reply.spoken_summary);
-      refreshMeta();
+      requestRefresh();
       pollHealthAndLatency();
     } catch (err: any) {
       setVoiceNotice(err?.message || "Command dispatch failed.");
@@ -454,6 +481,7 @@ export const JarvisCommandApp: React.FC = () => {
     }
     setVoiceNotice(null);
     stopSpeaking();
+    voiceEnabledRef.current = false;
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort?.();
@@ -468,6 +496,8 @@ export const JarvisCommandApp: React.FC = () => {
     const rec = new SpeechRec();
     rec.lang = "en-US";
     rec.interimResults = false;
+    rec.continuous = true;
+    voiceEnabledRef.current = true;
     rec.onstart = () => {
       if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
       setListening(true);
@@ -493,14 +523,14 @@ export const JarvisCommandApp: React.FC = () => {
               if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
               analyser.getByteFrequencyData(data);
               const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
-              setAudioLevel(Math.min(1, avg / 95));
+              audioLevelRef.current = Math.min(1, avg / 95);
               const step = Math.max(1, Math.floor(data.length / WAVEFORM_BAR_COUNT));
               const bars: number[] = [];
               for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
                 const v = data[Math.min(data.length - 1, i * step)] / 255;
                 bars.push(Math.max(0.14, Math.min(1, v * 1.35)));
               }
-              setWaveformBars(bars);
+              paintWaveform(waveformRef.current, bars);
               rafRef.current = requestAnimationFrame(tick);
             };
             tick();
@@ -520,7 +550,17 @@ export const JarvisCommandApp: React.FC = () => {
       setVoiceNotice(`Voice input status: ${ev.error}`);
     };
     rec.onend = () => {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
+      if (voiceEnabledRef.current) {
+        try {
+          rec.start();
+        } catch {
+          voiceEnabledRef.current = false;
+          setListening(false);
+          cleanupAudioPipeline();
+        }
+        return;
+      }
       setListening(false);
       cleanupAudioPipeline();
     };
@@ -536,6 +576,7 @@ export const JarvisCommandApp: React.FC = () => {
 
   const toggleVoiceInput = () => {
     if (listening) {
+      voiceEnabledRef.current = false;
       recognitionRef.current?.stop();
       setListening(false);
       cleanupAudioPipeline();
@@ -558,7 +599,7 @@ export const JarvisCommandApp: React.FC = () => {
       if (editingApprovalId === approvalId) {
         setEditingApprovalId(null);
       }
-      refreshMeta();
+      requestRefresh();
     } catch (err: any) {
       setVoiceNotice(err?.message || `Failed to update approval ${approvalId}`);
     }
@@ -597,13 +638,17 @@ export const JarvisCommandApp: React.FC = () => {
       setApprovalStatusMap((prev) => ({ ...prev, [approvalId]: "MODIFIED" }));
       setEditingApprovalId(null);
       setModifyError(null);
-      refreshMeta();
+      requestRefresh();
     } catch (err: any) {
       setModifyError(err?.message || "Invalid JSON parameters");
     }
   };
 
+  const extraRequiredToolArgs = (toolName: string) =>
+    (toolSchemas[toolName]?.required || []).filter((name) => name !== "country_id");
+
   const runDirectTool = async (toolName: string) => {
+    if (extraRequiredToolArgs(toolName).length > 0) return;
     setRunningTool(toolName);
     try {
       const res = await fetch(`/api/ai/tools/${toolName}`, {
@@ -632,7 +677,7 @@ export const JarvisCommandApp: React.FC = () => {
         duration_ms: data.duration_ms,
         output: data.result ?? data,
       });
-      refreshMeta();
+      requestRefresh();
     } catch (err: any) {
       setToolRunResult({ tool: toolName, output: { error: err?.message || "Tool call failed" } });
     } finally {
@@ -851,7 +896,7 @@ export const JarvisCommandApp: React.FC = () => {
             thinking={loading}
             awaitingApproval={pendingApprovalsCount > 0}
             error={Boolean(voiceNotice && /failed|error/i.test(voiceNotice))}
-            audioLevel={audioLevel}
+            audioLevelRef={audioLevelRef}
             statusLabel={
               listening
                 ? "LISTENING · LIVE AUDIO STREAM"
@@ -884,7 +929,7 @@ export const JarvisCommandApp: React.FC = () => {
 
         {/* Popped-Up Frosted Obsidian Bottom Drawer Overlay (3D Core remains visible behind/above) */}
         {activeDock !== null && (
-          <section className="absolute left-4 right-4 bottom-[84px] z-20 max-w-5xl mx-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex flex-col overflow-hidden max-h-[52vh] select-text">
+          <section aria-label={`JARVIS ${activeDock} drawer`} className="absolute left-4 right-4 bottom-[84px] z-20 max-w-5xl mx-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex flex-col overflow-hidden max-h-[52vh] select-text">
             {/* Drawer Header */}
             <div className="px-4 py-2 bg-[#0F1012]/90 border-b border-[#2A2D34] flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2 text-[11px] font-mono tracking-wider uppercase text-[#FAFAFA]">
@@ -979,10 +1024,11 @@ export const JarvisCommandApp: React.FC = () => {
                     </div>
 
                     {/* Live Animated White/Silver Audio Waveform Bars */}
-                    <div className="h-8 flex-1 min-w-[180px] max-w-[320px] bg-[#050505] rounded-lg border border-[#2A2D34] px-2.5 flex items-center justify-center gap-[3px]">
-                      {waveformBars.map((lvl, i) => (
+                    <div ref={waveformRef} aria-hidden="true" className="h-8 flex-1 min-w-[180px] max-w-[320px] bg-[#050505] rounded-lg border border-[#2A2D34] px-2.5 flex items-center justify-center gap-[3px]">
+                      {Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => (
                         <div
                           key={i}
+                          style={{ height: "14%" }}
                           className={`w-[3px] rounded-full transition-all duration-75 ${
                             listening
                               ? "bg-[#FAFAFA]"
@@ -990,7 +1036,6 @@ export const JarvisCommandApp: React.FC = () => {
                               ? "bg-[#D4D4D8]"
                               : "bg-[#3F3F46]"
                           }`}
-                          style={{ height: `${Math.round(lvl * 100)}%` }}
                         />
                       ))}
                     </div>
@@ -1192,6 +1237,7 @@ export const JarvisCommandApp: React.FC = () => {
                     <input
                       value={logQuery}
                       onChange={(e) => setLogQuery(e.target.value)}
+                      aria-label="Filter logs"
                       placeholder="Filter logs..."
                       className="pl-6 pr-2 py-0.5 rounded bg-[#050505] border border-[#2A2D34] text-[11px] text-[#FAFAFA] placeholder:text-[#71717A] w-44 focus:outline-none focus:border-white/40"
                     />
@@ -1206,12 +1252,14 @@ export const JarvisCommandApp: React.FC = () => {
                     const timeStr = (item.timestamp || "").split("T")[1]?.slice(0, 8) || "--:--:--";
                     const isOpen = expandedLogIdx === idx;
                     return (
-                      <div
-                        key={item.event_id || idx}
-                        onClick={() => setExpandedLogIdx(isOpen ? null : idx)}
-                        className="px-3.5 py-2 hover:bg-[#16181C]/70 cursor-pointer"
-                      >
-                        <div className="flex items-center gap-2.5">
+                      <div key={item.event_id || idx} className="hover:bg-[#16181C]/70">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedLogIdx(isOpen ? null : idx)}
+                          aria-expanded={isOpen}
+                          className="w-full text-left px-3.5 py-2 cursor-pointer"
+                        >
+                          <span className="flex items-center gap-2.5">
                           <span className="text-[#71717A] shrink-0">{timeStr}</span>
                           <span className="px-1.5 py-0.5 rounded text-[9px] uppercase border border-[#2A2D34] bg-[#16181C] text-[#E4E4E7] shrink-0">
                             {cat.replace("_", " ")}
@@ -1228,9 +1276,10 @@ export const JarvisCommandApp: React.FC = () => {
                           {item.duration_ms !== undefined && (
                             <span className="text-[#FAFAFA] shrink-0">{item.duration_ms} ms</span>
                           )}
-                        </div>
+                          </span>
+                        </button>
                         {isOpen && item.payload && (
-                          <pre className="mt-2 p-2.5 rounded bg-[#0F1012] border border-[#2A2D34] text-[10px] text-[#E4E4E7] overflow-x-auto max-h-36">
+                          <pre className="mt-2 mb-2 mx-3.5 p-2.5 rounded bg-[#0F1012] border border-[#2A2D34] text-[10px] text-[#E4E4E7] overflow-x-auto max-h-36">
                             {JSON.stringify(item.payload, null, 2)}
                           </pre>
                         )}
@@ -1283,7 +1332,9 @@ export const JarvisCommandApp: React.FC = () => {
                     </div>
                   )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                    {filteredTools.map((t) => (
+                    {filteredTools.map((t) => {
+                      const requiredArgs = extraRequiredToolArgs(t);
+                      return (
                       <div
                         key={t}
                         className="px-2.5 py-2 rounded-lg bg-[#0F1012] border border-[#2A2D34] flex items-center justify-between gap-2"
@@ -1294,13 +1345,15 @@ export const JarvisCommandApp: React.FC = () => {
                         </div>
                         <button
                           onClick={() => runDirectTool(t)}
-                          disabled={runningTool === t}
-                          className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#FAFAFA] hover:text-[#050505] border border-[#2A2D34] text-[10px] font-mono text-[#FAFAFA] shrink-0 transition-colors"
+                          disabled={runningTool === t || requiredArgs.length > 0}
+                          title={requiredArgs.length > 0 ? `Requires: ${requiredArgs.join(", ")}. Ask JARVIS instead.` : "Run tool"}
+                          className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#FAFAFA] hover:text-[#050505] border border-[#2A2D34] text-[10px] font-mono text-[#FAFAFA] shrink-0 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                          {runningTool === t ? "..." : "Run"}
+                          {runningTool === t ? "..." : requiredArgs.length > 0 ? "Args" : "Run"}
                         </button>
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 </div>
               </div>
@@ -1391,12 +1444,12 @@ export const JarvisCommandApp: React.FC = () => {
             className="pointer-events-auto px-3 py-0.5 rounded-full bg-[#0B0C0E]/90 backdrop-blur-md border border-[#2A2D34] text-[10px] font-mono tracking-wide text-[#A1A1AA] shadow-lg flex items-center gap-1.5 whitespace-nowrap overflow-x-auto max-w-full"
           >
             <span className="text-[#FAFAFA]">
-              {healthInvariants.approvalGated ? "✓" : "✗"}
+              {healthInvariants.approvalGated === null ? "?" : healthInvariants.approvalGated ? "✓" : "✗"}
             </span>
             <span>Approval-gated</span>
             <span className="text-[#52525B]">·</span>
             <span className="text-[#FAFAFA]">
-              {healthInvariants.zeroDatabase ? "✓" : "✗"}
+              {healthInvariants.zeroDatabase === null ? "?" : healthInvariants.zeroDatabase ? "✓" : "✗"}
             </span>
             <span>Zero-database</span>
             <span className="text-[#52525B]">·</span>

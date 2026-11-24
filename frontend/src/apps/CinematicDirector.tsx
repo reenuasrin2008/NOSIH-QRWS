@@ -177,7 +177,7 @@ async function sendJarvisBrief(
     "/api/ai/chat",
     {
       method: "POST",
-      body: JSON.stringify({ message, session_id: "cinematic-directors-cut" }),
+      body: JSON.stringify({ message, session_id: "cinematic-directors-cut", use_llm_polish: true }),
     },
     signal
   );
@@ -204,6 +204,34 @@ export const CinematicDirector: React.FC = () => {
   const isMountedRef = useRef(true);
   const activeAbortRef = useRef<AbortController | null>(null);
   const actElapsedRef = useRef(0);
+  const pausedRef = useRef(paused);
+  const busyRef = useRef(false);
+  const resumeWaitersRef = useRef<Set<() => void>>(new Set());
+  pausedRef.current = paused;
+
+  const waitUntilResumed = useCallback((signal: AbortSignal) => {
+    if (!pausedRef.current) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      const resume = () => {
+        signal.removeEventListener("abort", abort);
+        resumeWaitersRef.current.delete(resume);
+        resolve();
+      };
+      const abort = () => {
+        resumeWaitersRef.current.delete(resume);
+        reject(new DOMException("Cinematic act aborted", "AbortError"));
+      };
+      resumeWaitersRef.current.add(resume);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!paused) {
+      resumeWaitersRef.current.forEach((resume) => resume());
+    }
+  }, [paused]);
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -228,10 +256,13 @@ export const CinematicDirector: React.FC = () => {
 
     const executeAct = async () => {
       if (!isMountedRef.current) return;
+      busyRef.current = true;
       setBusy(true);
       setInlineError(null);
 
       try {
+        await waitUntilResumed(signal);
+        if (!isMountedRef.current || signal.aborted) return;
         switch (actIndex) {
           case 0: {
             setActionStatus("Capturing baseline KPIs & framing global overview...");
@@ -247,7 +278,9 @@ export const CinematicDirector: React.FC = () => {
 
           case 1: {
             setActionStatus("Focusing Veridia Basin (COUNTRY-03) & staging Category 4 cyclone...");
+            await waitUntilResumed(signal);
             await callAiTool("view_country", { country_id: "COUNTRY-03" }, signal);
+            await waitUntilResumed(signal);
             const prep = await callAiTool(
               "prepare_disaster_event",
               {
@@ -264,9 +297,11 @@ export const CinematicDirector: React.FC = () => {
             }
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Approving ${approvalId} (Category 4 Cyclone · COUNTRY-03)...`);
+            await waitUntilResumed(signal);
             await approveOperation(approvalId, signal);
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Cyclone live (${approvalId}) · J.A.R.V.I.S. threat brief running...`);
+            await waitUntilResumed(signal);
             await sendJarvisBrief(
               "Analyze the Category 4 cyclone impact in Country 3",
               signal
@@ -278,6 +313,7 @@ export const CinematicDirector: React.FC = () => {
 
           case 2: {
             setActionStatus("Staging 8-drone SURVIVOR_SEARCH swarm for COUNTRY-03...");
+            await waitUntilResumed(signal);
             const prep = await callAiTool(
               "prepare_swarm_operation",
               {
@@ -294,6 +330,7 @@ export const CinematicDirector: React.FC = () => {
             }
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Approving swarm deployment ${approvalId}...`);
+            await waitUntilResumed(signal);
             await approveOperation(approvalId, signal);
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`8-drone SURVIVOR_SEARCH swarm deployed (${approvalId}) ✓`);
@@ -302,6 +339,7 @@ export const CinematicDirector: React.FC = () => {
 
           case 3: {
             setActionStatus("Checking Veridia hospital surge & staging ambulance dispatch...");
+            await waitUntilResumed(signal);
             const [hospStatus, ambPrep] = await Promise.all([
               callAiTool("get_hospital_status", { country_id: "COUNTRY-03" }, signal),
               callAiTool(
@@ -316,6 +354,7 @@ export const CinematicDirector: React.FC = () => {
             }
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Approving ambulance dispatch ${approvalId}...`);
+            await waitUntilResumed(signal);
             await approveOperation(approvalId, signal);
             const hospResult =
               hospStatus.result && typeof hospStatus.result === "object"
@@ -336,6 +375,7 @@ export const CinematicDirector: React.FC = () => {
 
           case 4: {
             setActionStatus("Authorizing mutual aid corridor Ferros (COUNTRY-04) → Veridia (COUNTRY-03)...");
+            await waitUntilResumed(signal);
             const prep = await callAiTool(
               "prepare_cross_country_aid",
               {
@@ -352,6 +392,7 @@ export const CinematicDirector: React.FC = () => {
             }
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Approving mutual aid transfer ${approvalId}...`);
+            await waitUntilResumed(signal);
             await approveOperation(approvalId, signal);
             if (!isMountedRef.current || signal.aborted) return;
             setActionStatus(`Mutual aid transfer COUNTRY-04 → COUNTRY-03 approved (${approvalId}) ✓`);
@@ -391,6 +432,7 @@ export const CinematicDirector: React.FC = () => {
         setActionStatus("Act encountered an API error — use Skip or Restart to continue.");
       } finally {
         if (isMountedRef.current && !signal.aborted) {
+          busyRef.current = false;
           setBusy(false);
         }
       }
@@ -405,10 +447,11 @@ export const CinematicDirector: React.FC = () => {
 
   // Smooth act countdown timer (StrictMode-safe: no nested setState inside updater)
   useEffect(() => {
-    if (!isActive || paused || completed) return;
+    if (!isActive || paused || completed || busy) return;
 
     const durationMs = currentAct.durationSec * 1000;
     const timer = window.setInterval(() => {
+      if (busyRef.current) return;
       const next = actElapsedRef.current + TICK_INTERVAL_MS;
       if (next >= durationMs) {
         if (actIndex < ACTS.length - 1) {
@@ -429,7 +472,7 @@ export const CinematicDirector: React.FC = () => {
     return () => {
       window.clearInterval(timer);
     };
-  }, [isActive, paused, completed, actIndex, currentAct.durationSec]);
+  }, [isActive, paused, completed, busy, actIndex, currentAct.durationSec]);
 
   const handleTogglePause = useCallback(() => {
     if (completed) return;
@@ -437,6 +480,7 @@ export const CinematicDirector: React.FC = () => {
   }, [completed]);
 
   const handleSkipNext = useCallback(() => {
+    if (busy) return;
     if (actIndex < ACTS.length - 1) {
       actElapsedRef.current = 0;
       setActIndex((idx) => idx + 1);
@@ -448,9 +492,10 @@ export const CinematicDirector: React.FC = () => {
       setCompleted(true);
       setActElapsedMs(dur);
     }
-  }, [actIndex, currentAct.durationSec]);
+  }, [actIndex, currentAct.durationSec, busy]);
 
   const handleRestart = useCallback(() => {
+    if (busy) return;
     activeAbortRef.current?.abort();
     actElapsedRef.current = 0;
     setActIndex(0);
@@ -462,7 +507,7 @@ export const CinematicDirector: React.FC = () => {
     setAfterKpis(null);
     setActionStatus("Restarting 90-second Director's Cut...");
     setRunEpoch((e) => e + 1);
-  }, []);
+  }, [busy]);
 
   const handleExit = useCallback(() => {
     activeAbortRef.current?.abort();
@@ -530,9 +575,9 @@ export const CinematicDirector: React.FC = () => {
 
               <button
                 onClick={handleSkipNext}
-                disabled={completed}
+                disabled={completed || busy}
                 className="px-2.5 py-1 rounded bg-[#16181C] hover:bg-[#23262C] disabled:opacity-40 border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1 transition-colors"
-                title="Skip to next act"
+                title={busy ? "Wait for the current act request to finish" : "Skip to next act"}
               >
                 <SkipForward className="w-3 h-3" />
                 <span className="hidden sm:inline">Next Act</span>
@@ -540,8 +585,9 @@ export const CinematicDirector: React.FC = () => {
 
               <button
                 onClick={handleRestart}
-                className="px-2.5 py-1 rounded bg-[#16181C] hover:bg-[#23262C] border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1 transition-colors"
-                title="Restart 90-second sequence"
+                disabled={busy}
+                className="px-2.5 py-1 rounded bg-[#16181C] hover:bg-[#23262C] disabled:opacity-40 border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1 transition-colors"
+                title={busy ? "Wait for the current act request to finish" : "Restart 90-second sequence"}
               >
                 <RotateCcw className="w-3 h-3" />
                 <span className="hidden sm:inline">Restart</span>

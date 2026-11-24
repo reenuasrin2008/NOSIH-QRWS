@@ -1,6 +1,7 @@
 .PHONY: test verify dev-backend dev-world dev-operations dev-jarvis build-frontend
 
 PYTHON ?= python3
+HOST ?= 127.0.0.1
 
 test:
 	cd backend && $(PYTHON) -m unittest discover -s tests -p "test_*.py" -v
@@ -11,7 +12,7 @@ build-frontend:
 verify: test build-frontend
 
 dev-backend:
-	cd backend && $(PYTHON) -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	cd backend && $(PYTHON) -m uvicorn app.main:app --reload --host $(HOST) --port 8000
 
 dev-world:
 	cd frontend && npm run dev:world

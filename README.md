@@ -50,7 +50,7 @@
    # Windows:
    # .venv\Scripts\activate
    pip install -r requirements.txt
-   uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+   uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
    ```
 
 2. **Install Frontend Dependencies (once):**
@@ -71,8 +71,10 @@
    cd frontend && npm run dev:jarvis
    ```
 
+To avoid local port conflicts, start the backend on an explicit alternate port and pass `QR_PORT` and `QR_BACKEND_ORIGIN` to any frontend, for example `QR_PORT=5273 QR_BACKEND_ORIGIN=http://127.0.0.1:8010 npm run dev:world` when the backend is running on port `8010`.
+
 ### Optional — Configure Gemini & Grok Keys (6-Key Pool)
-Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY_1..3` / `GEMINI_MODEL` and/or `GROK_API_KEY_1..3` / `GROK_MODEL`. Keys stay strictly server-side. Without API keys, JARVIS responds in **<5 ms** using its grounded deterministic tool orchestrator.
+Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY_1..3` / `GEMINI_MODEL` and/or `GROK_API_KEY_1..3` / `GROK_MODEL`. Keys stay strictly server-side. The backend loads `.env` automatically; blank model settings default to `gemini-2.5-flash` and `grok-3`. Without reachable API keys, JARVIS responds using its grounded deterministic tool orchestrator.
 
 ---
 
@@ -88,7 +90,7 @@ Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY_1..3` / `G
 
 ## 4. Automated Verification Commands (For CI & AI Agents)
 
-Run the one-shot full verification suite (**73 backend tests** + 50-tool schema integrity + frontend builds + `useFrame` & dead-code checks):
+Run the one-shot full verification suite (**83 backend tests** + 50-tool schema integrity + frontend builds + `useFrame` & dead-code checks). It automatically uses `backend/.venv` when available:
 ```bash
 ./scripts/verify_all.sh
 ```

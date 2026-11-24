@@ -55,7 +55,10 @@ def solve_greedy(
                 continue
             dist = math.hypot(d.position[0] - task.location[0], d.position[2] - task.location[2]) + drone_load[d.id] * 140.0
             if dist < best_dist:
-                ok, _, _ = is_drone_eligible_for_task(d, task, city, grid, strategy="greedy")
+                ok, _, _ = is_drone_eligible_for_task(
+                    d, task, city, grid, strategy="greedy",
+                    assigned_task_ids=assignments[d.id] + [task.id], tasks=tasks,
+                )
                 if ok:
                     best_dist = dist
                     best_drone = d

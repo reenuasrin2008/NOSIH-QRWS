@@ -82,6 +82,8 @@ class TestObservabilityAndConcurrency(unittest.TestCase):
             json={"country_id": "COUNTRY-02", "disaster_type": "FLOOD", "severity": 0.65},
         )
         self.assertEqual(r_dis.status_code, 200)
+        approval = r_dis.json()
+        self.client.post(f"/api/approvals/{approval['approval_id']}/approve", json={"auto_execute": True})
         end_ver = global_services.event_bus.world_version
         self.assertGreater(end_ver, start_ver)
 
@@ -120,10 +122,11 @@ class TestObservabilityAndConcurrency(unittest.TestCase):
 
         # Mutate the world heavily between the two reseeds
         self.client.post("/api/world/tick?dt_seconds=180")
-        self.client.post(
+        disaster_approval = self.client.post(
             "/api/disasters",
             json={"country_id": "COUNTRY-06", "disaster_type": "FIRE", "severity": 0.85},
-        )
+        ).json()
+        self.client.post(f"/api/approvals/{disaster_approval['approval_id']}/approve", json={"auto_execute": True})
         self.client.post("/api/world/tick?dt_seconds=180")
 
         r2 = self.client.post("/api/world/reseed?seed=42")
