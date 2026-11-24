@@ -63,11 +63,15 @@ export const globalApi = {
   getEquity: (countryId: string) => req<any>(`/api/equity/${countryId}`),
   getPlaybooks: () => req<{ playbooks: Array<{ id: string; title: string; category: string }> }>("/api/playbooks"),
 
-  jarvisChat: (message: string, sessionId = "default") =>
-    req<JarvisReply>("/api/ai/chat", {
+  jarvisChat: (message: string, sessionId = "default") => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15000);
+    return req<JarvisReply>("/api/ai/chat", {
       method: "POST",
       body: JSON.stringify({ message, session_id: sessionId, use_llm_polish: true }),
-    }),
+      signal: controller.signal,
+    }).finally(() => window.clearTimeout(timeout));
+  },
   getProvidersStatus: () => req<ProviderStatusPayload>("/api/ai/providers/status"),
   getApprovals: (status?: string) =>
     req<{ approvals: ApprovalItem[] }>(status ? `/api/approvals?status=${status}` : "/api/approvals"),

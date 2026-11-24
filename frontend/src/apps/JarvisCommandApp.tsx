@@ -93,6 +93,7 @@ export const JarvisCommandApp: React.FC = () => {
   const [messages, setMessages] = useState<JarvisReply[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [pendingCommand, setPendingCommand] = useState<string | null>(null);
   const [selectedCountryId, setSelectedCountryId] = useState("COUNTRY-03");
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
@@ -393,6 +394,8 @@ export const JarvisCommandApp: React.FC = () => {
     if (!query || loading) return;
     stopSpeaking();
     setInput("");
+    setVoiceNotice(null);
+    setPendingCommand(query);
     setLoading(true);
     setActiveDock("command");
     try {
@@ -409,8 +412,31 @@ export const JarvisCommandApp: React.FC = () => {
       requestRefresh();
       pollHealthAndLatency();
     } catch (err: any) {
-      setVoiceNotice(err?.message || "Command dispatch failed.");
+      const errorMessage =
+        err?.name === "AbortError"
+          ? "The command timed out after 15 seconds. Please retry."
+          : err?.message || "The command service could not be reached. Please retry.";
+      const errorReply: JarvisReply = {
+        reply_id: `MSG-ERROR-${Date.now()}`,
+        timestamp: new Date().toISOString(),
+        session_id: "command-session-1",
+        user_message: query,
+        assistant_message: `I couldn't complete that command, Sir. ${errorMessage}`,
+        spoken_summary: `Command failed. ${errorMessage}`,
+        provider: "local_deterministic_orchestrator",
+        model: "client-error-handler",
+        latency_ms: 0,
+        globe_state: "ERROR",
+        context: { active_country_id: selectedCountryId },
+        execution_trace: [],
+        structured_cards: [],
+        frontend_commands: [],
+        pending_approval: null,
+      };
+      setMessages((prev) => [...prev, errorReply]);
+      setVoiceNotice(errorMessage);
     } finally {
+      setPendingCommand(null);
       setLoading(false);
     }
   };
@@ -1050,7 +1076,8 @@ export const JarvisCommandApp: React.FC = () => {
                       <button
                         key={q}
                         onClick={() => sendCommand(q)}
-                        className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#22252B] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA] hover:text-[#FAFAFA] truncate max-w-[235px] transition-colors"
+                        disabled={loading}
+                        className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#22252B] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA] hover:text-[#FAFAFA] disabled:opacity-40 disabled:cursor-not-allowed truncate max-w-[235px] transition-colors"
                       >
                         {q}
                       </button>
@@ -1060,7 +1087,7 @@ export const JarvisCommandApp: React.FC = () => {
 
                 {/* Conversation Transcript */}
                 <div className="flex-1 overflow-y-auto p-3.5 space-y-3 bg-[#050505]/70 min-h-[160px]">
-                  {messages.length === 0 && (
+                  {messages.length === 0 && !pendingCommand && (
                     <div className="p-3.5 rounded-xl bg-[#0F1012] border border-[#2A2D34] text-xs text-[#A1A1AA]">
                       Press <strong className="text-[#FAFAFA]">SPEAK TO JARVIS</strong> or enter a
                       tactical command below. All{" "}
@@ -1068,6 +1095,13 @@ export const JarvisCommandApp: React.FC = () => {
                         {availableTools.length || 50}
                       </span>{" "}
                       grounded backend tools are online.
+                    </div>
+                  )}
+
+                  {pendingCommand && (
+                    <div className="rounded-xl bg-[#0F1012] border border-[#FAFAFA]/30 p-3.5 space-y-2" aria-live="polite">
+                      <div className="text-[10px] font-mono text-[#FAFAFA] font-semibold">&gt; {pendingCommand}</div>
+                      <div className="text-xs text-[#A1A1AA]">Processing through the grounded command engine…</div>
                     </div>
                   )}
 
@@ -1197,8 +1231,10 @@ export const JarvisCommandApp: React.FC = () => {
                     value={input}
                     onChange={(e) => setInput(e.target.value)}
                     onKeyDown={(e) => e.key === "Enter" && sendCommand()}
+                    disabled={loading}
+                    aria-busy={loading}
                     placeholder="Speak or type tactical command to J.A.R.V.I.S..."
-                    className="flex-1 bg-[#050505] border border-[#2A2D34] rounded-lg px-3 py-1.5 text-xs text-[#FAFAFA] placeholder:text-[#71717A] focus:outline-none focus:border-white/40"
+                    className="flex-1 bg-[#050505] border border-[#2A2D34] rounded-lg px-3 py-1.5 text-xs text-[#FAFAFA] placeholder:text-[#71717A] focus:outline-none focus:border-white/40 disabled:opacity-60"
                   />
                   <button
                     onClick={() => sendCommand()}

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 import json
 import logging
@@ -47,6 +48,7 @@ from app.world.global_engine import GlobalWorldEngine
 logger = logging.getLogger("jarvis")
 
 MAX_MESSAGE_LENGTH = 4000
+LLM_POLISH_TIMEOUT_SECONDS = 6.0
 
 
 class JarvisAgent:
@@ -347,25 +349,33 @@ class JarvisAgent:
         intents_succeeded = 0
 
         for intent in intents:
-            ok, globe_state, pending_approval = execute_intent(
-                intent,
-                intents_count=len(intents),
-                cid=cid,
-                country=country,
-                low=low,
-                entities=entities,
-                ctx=ctx,
-                world=self.world,
-                run_tool=lambda name, args: self._run_tool(trace, name, args),
-                is_tool_error=self._is_tool_error,
-                structured_cards=structured_cards,
-                frontend_commands=frontend_commands,
-                kpis=kpis,
-                tables=tables,
-                answer_sections=answer_sections,
-                globe_state=globe_state,
-                pending_approval=pending_approval,
-            )
+            try:
+                ok, globe_state, pending_approval = execute_intent(
+                    intent,
+                    intents_count=len(intents),
+                    cid=cid,
+                    country=country,
+                    low=low,
+                    entities=entities,
+                    ctx=ctx,
+                    world=self.world,
+                    run_tool=lambda name, args: self._run_tool(trace, name, args),
+                    is_tool_error=self._is_tool_error,
+                    structured_cards=structured_cards,
+                    frontend_commands=frontend_commands,
+                    kpis=kpis,
+                    tables=tables,
+                    answer_sections=answer_sections,
+                    globe_state=globe_state,
+                    pending_approval=pending_approval,
+                )
+            except Exception as exc:
+                logger.exception("intent_execution_failed intent=%s error=%s", intent, exc)
+                answer_sections.append(
+                    f"I couldn't complete {intent.replace('_', ' ')}, Sir. The grounded command engine reported an internal error; please retry."
+                )
+                globe_state = "ERROR"
+                ok = False
             if ok:
                 intents_succeeded += 1
 
@@ -373,7 +383,9 @@ class JarvisAgent:
         if intents_succeeded == 0 and intents:
             globe_state = "ERROR"
 
-        answer = "\n".join(answer_sections)
+        answer = "\n".join(answer_sections).strip()
+        if not answer:
+            answer = "I'm standing by, Sir. Ask for a country briefing, fleet status, route comparison, or an approval-gated response operation."
 
         # Ultra-fast grounded response by default (<5ms); optional LLM polish when requested & keys configured
         provider_used = "instant_grounded_orchestrator"
@@ -384,10 +396,13 @@ class JarvisAgent:
                 default=str,
             )[:4000]
             try:
-                llm_res = await self.provider_manager.synthesize_narrative(
-                    user_query=message,
-                    grounded_context=tool_context,
-                    fallback_text=answer,
+                llm_res = await asyncio.wait_for(
+                    self.provider_manager.synthesize_narrative(
+                        user_query=message,
+                        grounded_context=tool_context,
+                        fallback_text=answer,
+                    ),
+                    timeout=LLM_POLISH_TIMEOUT_SECONDS,
                 )
                 polished = llm_res.get("text") if isinstance(llm_res, dict) else None
                 if isinstance(polished, str) and polished.strip():

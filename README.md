@@ -90,7 +90,7 @@ Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY_1..3` / `G
 
 ## 4. Automated Verification Commands (For CI & AI Agents)
 
-Run the one-shot full verification suite (**83 backend tests** + 50-tool schema integrity + frontend builds + `useFrame` & dead-code checks). It automatically uses `backend/.venv` when available:
+Run the one-shot full verification suite (**87 backend tests** + 50-tool schema integrity + frontend builds + `useFrame` & dead-code checks). It automatically uses `backend/.venv` when available:
 ```bash
 ./scripts/verify_all.sh
 ```

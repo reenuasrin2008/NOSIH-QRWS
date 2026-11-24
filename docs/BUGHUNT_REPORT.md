@@ -26,6 +26,7 @@
 
 ### AI Pipeline, Providers, Approvals & API Routes
 - **`backend/app/providers/ai_providers.py` & `backend/app/ai/jarvis_agent.py`**: Enabled intra-provider key rotation across all healthy keys in the 6-key pool before provider failover; reset `error_count = 0` in `enable_key`; hardened Gemini/Grok adapters against malformed JSON and empty `candidates`/`choices`; safely serialized non-string `grounded_context`; kept Gemini keys out of URL query strings and redacted provider errors; removed redundant tool declarations from narrative polishing because tools already execute in the grounded orchestrator and Gemini rejects unsupported schema fields.
+- **`backend/app/ai/jarvis_agent.py` & `frontend/src/apps/JarvisCommandApp.tsx`**: Added visible pending and error replies, bounded client/provider waits, per-intent exception containment, help responses, and natural numeric ambulance/swarm phrasing so commands no longer fail silently.
 - **`backend/app/approvals/engine.py`**: Blocked post-execution/post-rejection `reject()` mutations and duplicate `approve_and_execute` calls; added `EXECUTING` re-entrancy guard and explicit `bump_version=True` on `operation.executed`; validated IDs and enums before mutating world state.
 - **`backend/app/ai/jarvis_agent.py`**: Handled empty/whitespace messages cleanly (`IDLE` reply) and clamped oversized messages (`MAX_MESSAGE_LENGTH = 4000`); guarded `use_llm_polish=True` failures; capped active sessions (`MAX_SESSIONS = 500`) and pruned orphaned conversations; sanitized `filename` in `_save_world_local`.
 - **`backend/app/api/global_routes.py` & `structured_api.py`**: Converted unhandled `KeyError`/`ValueError` 500s across 15+ endpoints into clean HTTP 400/404/422 responses; emitted `world.mode_changed` so `/api/v2/*` caches invalidate on mode switch; hardened `/api/ai/chat/stream` SSE error frames; fixed `deque` slicing on `/api/routes/logs`; bounded `VersionedResponseCache` (`max_entries=512`) and `/api/v2/search` query length (200 chars).
@@ -39,5 +40,5 @@
 
 ## 3. Verification Summary
 - **`./scripts/verify_all.sh`**: `ALL CHECKS PASSED`
-- **Backend tests**: **83/83 passing**, including the original regression suite plus approval concurrency, reset safety, provider secret redaction, invalid-target rejection, routing-bound tests, and the LLM-polish payload regression.
+- **Backend tests**: **87/87 passing**, including the original regression suite plus approval concurrency, reset safety, provider secret redaction, invalid-target rejection, routing-bound tests, LLM-polish payload/timeout tests, and visible command-error fallbacks.
 - **Frontend static audit**: 67 `.ts`/`.tsx` files — TypeScript and all three production builds pass; 0 known npm audit vulnerabilities; 0 broken relative imports or missing npm packages.

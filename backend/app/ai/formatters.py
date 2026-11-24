@@ -706,6 +706,24 @@ def execute_intent(
         structured_cards.append({"type": "country_list", "data": cl})
         answer_sections.append(f"All 7 nations online, Sir: {', '.join(c['name'] for c in cl['countries'])}.")
 
+    elif intent == "help":
+        structured_cards.append({
+            "type": "help",
+            "data": {
+                "examples": [
+                    "Show hospital status in COUNTRY-03",
+                    "Compare the best drones to reach the hospital",
+                    "Dispatch 2 ambulances in COUNTRY-03",
+                    "Prepare a rescue plan for COUNTRY-03",
+                ],
+            },
+        })
+        answer_sections.append(
+            "I can report country, hospital, shelter, supply, drone, ambulance, road, and disaster status; "
+            "compare routes; run counterfactuals; and prepare swarm, ambulance, mutual-aid, disaster, or rescue operations for approval. "
+            "Try “Show hospital status in COUNTRY-03” or “What can you do?”."
+        )
+
     else:
         detail = run_tool("get_country_status", {"country_id": cid})
         if is_tool_error(detail):

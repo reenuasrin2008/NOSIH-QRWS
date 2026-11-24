@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 import httpx
 
 from app.main import app, global_services
+from app.ai.intents import recognize_intents
 from app.providers.ai_providers import (
     AIProviderManager,
     GeminiAdapter,
@@ -226,6 +227,44 @@ class TestBugHuntRegressions(unittest.TestCase):
         self.assertEqual(reply["provider"], "gemini")
         self.assertEqual(reply["assistant_message"], "Grounded provider summary")
         self.assertNotIn("tool_schemas", synthesize.call_args.kwargs)
+
+    def test_numeric_ambulance_dispatch_is_recognized(self) -> None:
+        intents = recognize_intents("dispatch 2 ambulances in COUNTRY-03")
+        self.assertIn("prepare_ambulance_dispatch", intents)
+
+    def test_help_command_returns_capabilities(self) -> None:
+        reply = asyncio.run(
+            global_services.jarvis.process_command("what can you do?", session_id="help-command")
+        )
+        self.assertEqual(reply["intent"], "help")
+        self.assertIn("compare routes", reply["assistant_message"])
+
+    def test_intent_exception_still_returns_visible_reply(self) -> None:
+        with patch("app.ai.jarvis_agent.execute_intent", side_effect=RuntimeError("simulated intent failure")):
+            reply = asyncio.run(
+                global_services.jarvis.process_command("show hospital status in COUNTRY-03", session_id="intent-error")
+            )
+        self.assertEqual(reply["globe_state"], "ERROR")
+        self.assertEqual(reply["intents_failed"], 1)
+        self.assertIn("couldn't complete", reply["assistant_message"])
+
+    def test_llm_polish_timeout_returns_grounded_answer(self) -> None:
+        async def slow_provider(**kwargs):
+            await asyncio.sleep(0.2)
+            return {"text": "late provider response"}
+
+        agent = global_services.jarvis
+        with patch("app.ai.jarvis_agent.LLM_POLISH_TIMEOUT_SECONDS", 0.01), patch.object(
+            agent.provider_manager,
+            "synthesize_narrative",
+            new=slow_provider,
+        ):
+            reply = asyncio.run(
+                agent.process_command("show hospital status in COUNTRY-03", session_id="polish-timeout", use_llm_polish=True)
+            )
+        self.assertEqual(reply["provider"], "local_deterministic_orchestrator")
+        self.assertIn("Medical grid", reply["assistant_message"])
+        self.assertLess(reply["latency_ms"], 1000)
 
     def test_chat_stream_emits_sse_error_event_on_exception(self) -> None:
         with patch.object(

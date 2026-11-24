@@ -43,7 +43,10 @@ def recognize_intents(message: str, entities: Optional[Dict[str, Any]] = None) -
     if any(k in low for k in ("rescue plan", "recovery plan", "complete rescue", "comprehensive rescue")):
         intents.append("prepare_rescue_plan")
         is_action = True
-    if any(k in low for k in ("swarm", "medical delivery", "area scan", "deploy drone")) and any(
+    has_swarm_request = any(k in low for k in ("swarm", "medical delivery", "area scan")) or re.search(
+        r"\bdeploy\s+\d+\s+drones?\b", low
+    )
+    if has_swarm_request and any(
         k in low for k in ("prepare", "deploy", "launch", "start", "swarm", "scan", "delivery")
     ):
         if "swarm status" in low or "active swarm" in low or "list swarm" in low:
@@ -51,7 +54,7 @@ def recognize_intents(message: str, entities: Optional[Dict[str, Any]] = None) -
         else:
             intents.append("prepare_swarm")
             is_action = True
-    if any(k in low for k in ("dispatch ambulance", "send ambulance", "prepare ambulance")):
+    if re.search(r"\b(?:dispatch|send|prepare)\s+(?:\d+\s+)?ambulances?\b", low):
         intents.append("prepare_ambulance_dispatch")
         is_action = True
     if any(k in low for k in ("mutual aid", "another country", "cross-country", "spare ambulance", "additional ambulance")):
@@ -60,6 +63,8 @@ def recognize_intents(message: str, entities: Optional[Dict[str, Any]] = None) -
 
     # 3. Granular analytical & read-only intents (compound-capable!)
     if not is_action:
+        if any(k in low for k in ("help", "what can you do", "what can i ask", "command list", "capabilities")):
+            intents.append("help")
         if any(k in low for k in ("blocked road", "road blockage", "closed road", "flooded road", "blocked bridge")):
             intents.append("blocked_roads")
         elif any(k in low for k in ("road network", "all roads", "road status", "bridges")):
