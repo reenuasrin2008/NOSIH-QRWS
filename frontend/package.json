@@ -1,0 +1,42 @@
+{
+  "name": "quantum-rescue-frontend",
+  "private": true,
+  "version": "3.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --config vite.scene.config.ts",
+    "dev:world": "vite --config vite.scene.config.ts",
+    "dev:scene": "vite --config vite.scene.config.ts",
+    "dev:operations": "vite --config vite.control.config.ts",
+    "dev:control": "vite --config vite.control.config.ts",
+    "dev:jarvis": "vite --config vite.jarvis.config.ts",
+    "build": "tsc && vite build --config vite.scene.config.ts",
+    "build:operations": "vite build --config vite.control.config.ts --outDir dist-operations",
+    "build:jarvis": "vite build --config vite.jarvis.config.ts --outDir dist-jarvis",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@react-three/drei": "^9.114.0",
+    "@react-three/fiber": "^8.17.10",
+    "@react-three/postprocessing": "^2.16.3",
+    "framer-motion": "^11.11.0",
+    "lucide-react": "^0.453.0",
+    "postprocessing": "^6.36.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.0",
+    "three": "^0.169.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.169.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "autoprefixer": "^10.4.20",
+    "postcss": "^10.4.47",
+    "tailwindcss": "^3.4.13",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.8"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0.0",
+  "description": "Local 3D asset manifest for QUANTUM RESCUE. Procedural PBR fallbacks are active out-of-the-box for zero remote dependency.",
+  "assets": [
+    {
+      "name": "quadcopter_drone_procedural",
+      "local_path": "procedural://DroneFleet.tsx",
+      "source": "Quantum Rescue Procedural PBR Engine",
+      "license": "MIT",
+      "attribution": "Articulated 3D multi-rotor drone meshes with animated blades and class-coded telemetry beacons."
+    },
+    {
+      "name": "urban_city_buildings_procedural",
+      "local_path": "procedural://City.tsx",
+      "source": "Quantum Rescue Seeded City Generator",
+      "license": "MIT",
+      "attribution": "Deterministic multi-class urban buildings with architectural facades, rooftops, helipads, roads, bridges, and parks."
+    }
+  ]
+}
