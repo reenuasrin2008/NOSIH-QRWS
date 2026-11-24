@@ -1,5 +1,8 @@
 from __future__ import annotations
+import logging
 import uuid
+
+logger = logging.getLogger(__name__)
 from collections import deque
 from typing import Any, Callable, Deque, Dict, List, Optional, Set
 from pydantic import BaseModel, Field
@@ -97,8 +100,8 @@ class AuthoritativeEventBus:
         for cb in self._subscribers:
             try:
                 cb(msg)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("EventBus subscriber error: %s", exc)
         return ev
 
     def dispatch_frontend_command(
@@ -131,8 +134,8 @@ class AuthoritativeEventBus:
         for cb in self._subscribers:
             try:
                 cb(msg)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("EventBus subscriber error: %s", exc)
         return cmd
 
     def acknowledge_command(self, command_id: str, frontend: str) -> Optional[FrontendCommand]:

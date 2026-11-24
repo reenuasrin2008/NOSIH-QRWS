@@ -1,6 +1,9 @@
 from __future__ import annotations
 import app.core.compat  # noqa: F401
 import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional, Tuple
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -464,8 +467,8 @@ def _schedule_global_broadcast(msg: Dict[str, Any]) -> None:
                 "action": msg["command"]["command_type"],
                 "payload": msg["command"],
             }))
-    except RuntimeError:
-        pass
+    except RuntimeError as exc:
+        logger.debug("No running event loop for broadcast: %s", exc)
 
 
 global_services.event_bus.subscribe(_schedule_global_broadcast)

@@ -74,6 +74,9 @@ interface BigFlatWorldProps {
   allDrones?: any[];
   allHospitals?: any[];
   allShelters?: any[];
+  allAmbulances?: any[];
+  allFireUnits?: any[];
+  activeSwarms?: any[];
 }
 
 const CameraFlyRig: React.FC<{
@@ -141,6 +144,9 @@ const BigFlatWorldScene: React.FC<
   allDrones = [],
   allHospitals = [],
   allShelters = [],
+  allAmbulances = [],
+  allFireUnits = [],
+  activeSwarms = [],
   timeOfDay,
   cameraPreset,
 }) => {
@@ -342,6 +348,10 @@ const BigFlatWorldScene: React.FC<
     // Realistic smooth orbiting, banking, and altitude bobbing on all 98 live drones
     if (liveDronesRef.current) {
       liveDronesRef.current.children.forEach((grp, idx) => {
+        const dStatus = allDrones[idx]?.status;
+        if (dStatus !== "IN_FLIGHT" && dStatus !== "ASSIGNED") {
+          return;
+        }
         if (grp.userData.baseX === undefined) {
           grp.userData.baseX = grp.position.x;
           grp.userData.baseY = grp.position.y;
@@ -615,6 +625,55 @@ const BigFlatWorldScene: React.FC<
           </group>
         );
       })}
+
+      {/* Live Backend Ambulances positioned on flat world */}
+      {allAmbulances.map((a) => {
+        const [ax, az] = geoToFlatWorld(a.location.lat, a.location.lon, countryById[a.country_id]);
+        const isActive = a.status !== "AVAILABLE";
+        return (
+          <group key={a.ambulance_id} position={[ax, 3.5, az]}>
+            <mesh>
+              <boxGeometry args={[7, 5, 14]} />
+              <meshStandardMaterial color="#ffffff" roughness={0.35} />
+            </mesh>
+            <mesh position={[0, 3.2, 3]}>
+              <boxGeometry args={[4.5, 1.2, 2.2]} />
+              <meshStandardMaterial color={isActive ? "#ef4444" : "#38bdf8"} emissive={isActive ? "#ef4444" : "#0284c7"} emissiveIntensity={isActive ? 2.0 : 0.4} />
+            </mesh>
+          </group>
+        );
+      })}
+
+      {/* Live Backend Fire & Rescue Units */}
+      {allFireUnits.map((f) => {
+        const [fx, fz] = geoToFlatWorld(f.location.lat, f.location.lon, countryById[f.country_id]);
+        const active = f.status === "ON_SCENE" || f.status === "DISPATCHED";
+        return (
+          <group key={f.unit_id} position={[fx, 4, fz]}>
+            <mesh>
+              <boxGeometry args={[7.5, 6, 16]} />
+              <meshStandardMaterial color="#dc2626" roughness={0.4} />
+            </mesh>
+            <mesh position={[0, 3.8, 3.5]}>
+              <boxGeometry args={[4.5, 1.2, 2.2]} />
+              <meshStandardMaterial color="#fef08a" emissive="#f59e0b" emissiveIntensity={active ? 2.2 : 0.4} />
+            </mesh>
+          </group>
+        );
+      })}
+
+      {/* Active Swarm Coverage Perimeter Rings */}
+      {activeSwarms
+        .filter((sw) => sw.status === "ACTIVE")
+        .map((sw) => {
+          const [sx, sz] = geoToFlatWorld(sw.target_center.lat, sw.target_center.lon, countryById[sw.country_id]);
+          return (
+            <mesh key={sw.swarm_id} rotation={[-Math.PI / 2, 0, 0]} position={[sx, 12, sz]}>
+              <ringGeometry args={[180, 195, 48]} />
+              <meshBasicMaterial color="#10b981" transparent opacity={0.55} side={THREE.DoubleSide} />
+            </mesh>
+          );
+        })}
 
       {/* Live Backend Relief Shelters */}
       {allShelters.map((s) => {

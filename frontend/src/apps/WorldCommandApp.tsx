@@ -11,6 +11,9 @@ export const WorldCommandApp: React.FC = () => {
   const [allDrones, setAllDrones] = useState<any[]>([]);
   const [allHospitals, setAllHospitals] = useState<any[]>([]);
   const [allShelters, setAllShelters] = useState<any[]>([]);
+  const [allAmbulances, setAllAmbulances] = useState<any[]>([]);
+  const [allFireUnits, setAllFireUnits] = useState<any[]>([]);
+  const [activeSwarms, setActiveSwarms] = useState<any[]>([]);
   const [selectedCountryId, setSelectedCountryId] = useState<string>("COUNTRY-03");
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
@@ -21,6 +24,9 @@ export const WorldCommandApp: React.FC = () => {
     globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
     fetch("/api/hospitals").then((r) => r.json()).then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
     fetch("/api/shelters").then((r) => r.json()).then((d) => setAllShelters(d.shelters || [])).catch(() => {});
+    fetch("/api/ambulances").then((r) => r.json()).then((d) => setAllAmbulances(d.ambulances || [])).catch(() => {});
+    fetch("/api/fire-units").then((r) => r.json()).then((d) => setAllFireUnits(d.fire_units || [])).catch(() => {});
+    globalApi.getSwarms().then((r) => setActiveSwarms(r.swarms || [])).catch(() => {});
   };
 
   useEffect(() => {
@@ -119,6 +125,9 @@ export const WorldCommandApp: React.FC = () => {
             allDrones={allDrones}
             allHospitals={allHospitals}
             allShelters={allShelters}
+            allAmbulances={allAmbulances}
+            allFireUnits={allFireUnits}
+            activeSwarms={activeSwarms}
           />
         ) : (
           <TacticalFlatWorldMap

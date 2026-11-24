@@ -57,6 +57,7 @@ export const JarvisCommandApp: React.FC = () => {
   const recognitionRef = useRef<any>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   const refreshMeta = () => {
     globalApi.getOverview().then(setOverview).catch(() => {});
@@ -157,6 +158,7 @@ export const JarvisCommandApp: React.FC = () => {
         navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
           micStreamRef.current = stream;
           const ctx = new AudioContext();
+          audioCtxRef.current = ctx;
           const src = ctx.createMediaStreamSource(stream);
           const analyser = ctx.createAnalyser();
           analyser.fftSize = 256;
@@ -186,6 +188,8 @@ export const JarvisCommandApp: React.FC = () => {
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
       micStreamRef.current?.getTracks().forEach((tr) => tr.stop());
       micStreamRef.current = null;
+      audioCtxRef.current?.close().catch(() => {});
+      audioCtxRef.current = null;
     };
     recognitionRef.current = rec;
     rec.start();

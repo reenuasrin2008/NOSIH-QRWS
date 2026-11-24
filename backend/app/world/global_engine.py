@@ -688,6 +688,7 @@ class GlobalWorldEngine:
 
         self._advance_terrain_physics(dt_seconds)
         self._advance_living_agents(dt_seconds)
+        self._advance_detailed_civilization(dt_seconds)
         return self.get_clock_info()
 
     # ------------------------------------------------------------------
@@ -1331,7 +1332,10 @@ class GlobalWorldEngine:
             if s.accessible and s.remaining_capacity > 0:
                 shelters_by_country.setdefault(s.country_id, []).append(s)
 
+        # Deterministic schedule-driven movement + road-aware evacuation
         for p in self.people.values():
+            dist_rec = self.districts.get(p.district_id)
+            road_factor = dist_rec.road_accessibility if dist_rec else 1.0
             if p.safety_state in (PersonSafetyState.AWARE_OF_EMERGENCY, PersonSafetyState.EVACUATING, PersonSafetyState.NEEDS_SPECIAL_ASSISTANCE):
                 c_shelters = shelters_by_country.get(p.country_id, [])
                 if c_shelters:
@@ -1350,24 +1354,42 @@ class GlobalWorldEngine:
                         if target.current_occupancy < target.max_occupancy:
                             target.current_occupancy += 1
                             target.status = "ACTIVE"
-                            dist_rec = self.districts.get(p.district_id)
                             if dist_rec:
                                 dist_rec.evacuated_residents = min(dist_rec.total_residents, dist_rec.evacuated_residents + 1)
                     else:
-                        spd = step_deg * (0.6 if p.mobility != MobilityCategory.INDEPENDENT else 1.2)
+                        spd = step_deg * road_factor * (0.6 if p.mobility != MobilityCategory.INDEPENDENT else 1.2)
                         p.location.lat = round(p.location.lat + (dlat / dist) * spd, 5)
                         p.location.lon = round(p.location.lon + (dlon / dist) * spd, 5)
-            elif p.safety_state == PersonSafetyState.SAFE_AT_HOME:
-                # Subtle natural daily movement around district
-                p.location.lat = round(p.location.lat + self.rng.uniform(-0.0004, 0.0004), 5)
-                p.location.lon = round(p.location.lon + self.rng.uniform(-0.0004, 0.0004), 5)
 
-        # Ambulances physically glide toward destination hospital
+        # Pure logic-driven drone battery RTB & charging cycle
+        for d in self.drones.values():
+            if d.status in ("IN_FLIGHT", "ASSIGNED"):
+                if d.battery_pct < 22.0:
+                    d.status = "RETURNING"
+                    d.swarm_id = None
+                    d.assigned_mission_id = None
+                    self.event_bus.emit("drone.low_battery", payload={"drone_id": d.drone_id, "battery_pct": d.battery_pct}, country_id=d.country_id, entity_id=d.drone_id, category="recovery", bump_version=False)
+            elif d.status == "RETURNING":
+                c_center = self.countries[d.country_id].center
+                d.location.lat = round(d.location.lat + (c_center.lat - d.location.lat) * 0.3, 5)
+                d.location.lon = round(d.location.lon + (c_center.lon - d.location.lon) * 0.3, 5)
+                if haversine_km(d.location, c_center) < 1.5:
+                    d.status = "CHARGING"
+                    d.altitude_m = 0.0
+            elif d.status == "CHARGING":
+                d.battery_pct = min(100.0, round(d.battery_pct + 8.0 * max(0.5, dt_seconds / 60.0), 1))
+                if d.battery_pct >= 95.0:
+                    d.status = "AVAILABLE"
+
+        # Road-accessibility-aware ambulance glide toward assigned hospital
         for amb in self.ambulances.values():
             if amb.destination_hospital_id and amb.destination_hospital_id in self.hospitals:
                 h = self.hospitals[amb.destination_hospital_id]
-                amb.location.lat = round(amb.location.lat + (h.location.lat - amb.location.lat) * 0.22, 5)
-                amb.location.lon = round(amb.location.lon + (h.location.lon - amb.location.lon) * 0.22, 5)
+                c_dists = [d.road_accessibility for d in self.districts.values() if d.country_id == amb.country_id]
+                avg_road = sum(c_dists) / max(1, len(c_dists))
+                step_ratio = 0.25 * max(0.25, avg_road)
+                amb.location.lat = round(amb.location.lat + (h.location.lat - amb.location.lat) * step_ratio, 5)
+                amb.location.lon = round(amb.location.lon + (h.location.lon - amb.location.lon) * step_ratio, 5)
 
     def get_live_entities(self, country_id: str) -> Dict[str, Any]:
         """Return real moving positions & states for 3D rendering in World Command."""
@@ -1387,3 +1409,61 @@ class GlobalWorldEngine:
             "animals": [to_dict(a) for a in self.animals.values() if a.country_id == country_id],
             "disasters": [to_dict(d) for d in self.disasters.values() if d.country_id == country_id and d.status == "ACTIVE"],
         }
+
+    def _advance_detailed_civilization(self, dt_seconds: float) -> None:
+        """Shelter consumption + warehouse resupply, fire unit suppression, and dynamic country readiness."""
+        dt_days = dt_seconds / 86400.0
+
+        # 1. Shelter food/water consumption & automatic warehouse resupply
+        wh_by_city: Dict[str, WarehouseInventory] = {w.city_id: w for w in self.warehouses.values()}
+        for s in self.shelters.values():
+            if s.current_occupancy > 0:
+                food_used = int(math.ceil(s.current_occupancy * 2.0 * dt_days))
+                water_used = round(s.current_occupancy * 4.5 * dt_days, 2)
+                s.food_packages = max(0, s.food_packages - food_used)
+                s.water_liters = max(0.0, round(s.water_liters - water_used, 1))
+                # Resupply from city warehouse if below threshold
+                wh = wh_by_city.get(s.city_id)
+                if wh and s.food_packages < s.max_occupancy:
+                    transfer_food = min(wh.food_packages, s.max_occupancy)
+                    if transfer_food > 0:
+                        wh.food_packages -= transfer_food
+                        s.food_packages += transfer_food
+                if wh and s.water_liters < s.max_occupancy * 3.0:
+                    transfer_water = min(wh.water_liters, float(s.max_occupancy * 3))
+                    if transfer_water > 0:
+                        wh.water_liters -= transfer_water
+                        s.water_liters += transfer_water
+
+        # 2. Fire & Rescue unit suppression on active fires
+        active_fires = [ev for ev in self.disasters.values() if ev.status == "ACTIVE" and ev.disaster_type in (DisasterType.FIRE, DisasterType.WILDFIRE)]
+        for fu in self.fire_units.values():
+            c_fires = [f for f in active_fires if f.country_id == fu.country_id]
+            if c_fires and fu.water_liters > 100.0:
+                target_f = c_fires[0]
+                fu.status = "ON_SCENE"
+                fu.assigned_event_id = target_f.event_id
+                fu.location.lat = round(fu.location.lat + (target_f.origin.lat - fu.location.lat) * 0.25, 5)
+                fu.location.lon = round(fu.location.lon + (target_f.origin.lon - fu.location.lon) * 0.25, 5)
+                fu.water_liters = max(0.0, round(fu.water_liters - 120.0 * (dt_seconds / 60.0), 1))
+                # Suppress nearby terrain fire cells
+                for cell in self.terrain.values():
+                    if cell.country_id == fu.country_id and cell.fire_intensity > 0.0:
+                        if haversine_km(fu.location, cell.center) <= 25.0:
+                            cell.fire_intensity = max(0.0, round(cell.fire_intensity - 0.08, 3))
+            elif fu.status == "ON_SCENE" and not c_fires:
+                fu.status = "AVAILABLE"
+                fu.assigned_event_id = None
+                fu.water_liters = 4000.0
+
+        # 3. Dynamic country readiness score from live hospital beds, road access, and drone availability
+        for cid, c in self.countries.items():
+            c_dists = [d for d in self.districts.values() if d.country_id == cid]
+            c_hosp = [h for h in self.hospitals.values() if h.country_id == cid]
+            c_drn = [d for d in self.drones.values() if d.country_id == cid]
+            avg_road = sum(d.road_accessibility for d in c_dists) / max(1, len(c_dists))
+            power_ok = sum(1 for d in c_dists if d.power_available) / max(1, len(c_dists))
+            bed_ratio = sum(h.available_beds for h in c_hosp) / max(1, sum(h.total_beds for h in c_hosp))
+            drone_ok = sum(1 for d in c_drn if d.status != "DESTROYED") / max(1, len(c_drn))
+            c.power_grid_pct = round(power_ok * 100.0, 1)
+            c.readiness_score = round((avg_road * 0.30 + power_ok * 0.25 + bed_ratio * 0.25 + drone_ok * 0.20) * 100.0, 1)

@@ -269,6 +269,11 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         ]
         return {"hospitals": items}
 
+    @router.get("/fire-units")
+    def list_fire_units(country_id: Optional[str] = None):
+        items = [to_dict(f) for f in services.world.fire_units.values() if not country_id or f.country_id == country_id]
+        return {"fire_units": items}
+
     @router.get("/ambulances")
     def list_ambulances(country_id: Optional[str] = None):
         items = [to_dict(a) for a in services.world.ambulances.values() if not country_id or a.country_id == country_id]
