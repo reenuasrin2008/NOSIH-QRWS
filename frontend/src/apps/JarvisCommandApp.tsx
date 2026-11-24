@@ -1,22 +1,37 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Check,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
+  Edit3,
+  LayoutPanelLeft,
+  Map as MapIcon,
+  Maximize2,
   Mic,
   MicOff,
   Radio,
+  Search,
   Send,
+  ShieldAlert,
   Sliders,
+  Sparkles,
   Square,
   Terminal,
   Volume2,
   VolumeX,
+  Wrench,
   X,
 } from "lucide-react";
 import { TacticalFlatWorldMap } from "../components/map/TacticalFlatWorldMap";
 import { JarvisNeuralCore3D } from "../components/jarvis/JarvisNeuralCore3D";
-import { TacticalLiveLogsPanel } from "../components/logs/TacticalLiveLogsPanel";
 import { connectGlobalWebSocket, globalApi } from "../shared/globalApi";
-import type { GlobalOverview, JarvisReply, ProviderStatusPayload } from "../shared/globalTypes";
+import type {
+  ApprovalItem,
+  GlobalOverview,
+  JarvisReply,
+  ProviderStatusPayload,
+} from "../shared/globalTypes";
 
 const QUICK_COMMANDS = [
   "Analyze the situation in Country 3",
@@ -27,6 +42,23 @@ const QUICK_COMMANDS = [
   "Prepare an 8-drone medical delivery swarm in grid formation",
 ];
 
+type DockTab = "logs" | "command" | "tools" | "approvals" | "voice" | null;
+
+const WAVEFORM_BAR_COUNT = 28;
+
+function formatFrontendCommandChip(cmd: Record<string, any>): string {
+  const action = cmd.action || cmd.command || cmd.type || "ui.command";
+  const target =
+    cmd.target_id ||
+    cmd.country_id ||
+    cmd.parameters?.country_id ||
+    cmd.parameters?.target_id ||
+    cmd.parameters?.drone_id ||
+    cmd.parameters?.hospital_id ||
+    "";
+  return target ? `${action} → ${target} ✓` : `${action} ✓`;
+}
+
 export const JarvisCommandApp: React.FC = () => {
   const [overview, setOverview] = useState<GlobalOverview | null>(null);
   const [providers, setProviders] = useState<ProviderStatusPayload | null>(null);
@@ -35,6 +67,7 @@ export const JarvisCommandApp: React.FC = () => {
   const [events, setEvents] = useState<any[]>([]);
   const [toolLogs, setToolLogs] = useState<any[]>([]);
   const [availableTools, setAvailableTools] = useState<string[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [messages, setMessages] = useState<JarvisReply[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
@@ -42,6 +75,12 @@ export const JarvisCommandApp: React.FC = () => {
   const [candidateRoutes, setCandidateRoutes] = useState<any[]>([]);
   const [wsConnected, setWsConnected] = useState(false);
 
+  // Full-Screen 3D Core vs Split Core + Flat Tactical Map
+  const [stageMode, setStageMode] = useState<"fullscreen" | "split">("fullscreen");
+  // Bottom Pop-Up Dock Drawer
+  const [activeDock, setActiveDock] = useState<DockTab>(null);
+
+  // Voice & Web Audio API state
   const [voiceMode, setVoiceMode] = useState<"ptt" | "continuous" | "text">("ptt");
   const [listening, setListening] = useState(false);
   const [speaking, setSpeaking] = useState(false);
@@ -50,27 +89,75 @@ export const JarvisCommandApp: React.FC = () => {
   const [voiceVolume, setVoiceVolume] = useState(1.0);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoiceName, setSelectedVoiceName] = useState("");
-  const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   const [voiceNotice, setVoiceNotice] = useState<string | null>(null);
-  const [visualMode, setVisualMode] = useState<"core" | "map">("core");
   const [audioLevel, setAudioLevel] = useState(0);
+  const [waveformBars, setWaveformBars] = useState<number[]>(
+    () => Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14)
+  );
+
+  // Inline reply interactions: Explain, Modify Approval, Decision status
+  const [expandedExplainIds, setExpandedExplainIds] = useState<Record<string, boolean>>({});
+  const [explainingId, setExplainingId] = useState<string | null>(null);
+  const [editingApprovalId, setEditingApprovalId] = useState<string | null>(null);
+  const [modifyDraftJson, setModifyDraftJson] = useState("");
+  const [modifyError, setModifyError] = useState<string | null>(null);
+  const [approvalStatusMap, setApprovalStatusMap] = useState<Record<string, string>>({});
+
+  // Drawer-local filters
+  const [logFilter, setLogFilter] = useState<string>("all");
+  const [logQuery, setLogQuery] = useState("");
+  const [expandedLogIdx, setExpandedLogIdx] = useState<number | null>(null);
+  const [toolSearch, setToolSearch] = useState("");
+  const [toolRunResult, setToolRunResult] = useState<{
+    tool: string;
+    duration_ms?: number;
+    output: any;
+  } | null>(null);
+  const [runningTool, setRunningTool] = useState<string | null>(null);
+
   const recognitionRef = useRef<any>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const speakWaveRafRef = useRef<number | null>(null);
+  const chatEndRef = useRef<HTMLDivElement | null>(null);
+
+  const cleanupAudioPipeline = () => {
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+    }
+    if (micStreamRef.current) {
+      micStreamRef.current.getTracks().forEach((tr) => tr.stop());
+      micStreamRef.current = null;
+    }
+    if (audioCtxRef.current) {
+      audioCtxRef.current.close().catch(() => {});
+      audioCtxRef.current = null;
+    }
+    setAudioLevel(0);
+    setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
+  };
 
   const refreshMeta = () => {
     globalApi.getOverview().then(setOverview).catch(() => {});
     globalApi.getProvidersStatus().then(setProviders).catch(() => {});
     globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
-    fetch("/api/hospitals").then((r) => r.json()).then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
+    fetch("/api/hospitals")
+      .then((r) => r.json())
+      .then((d) => setAllHospitals(d.hospitals || []))
+      .catch(() => {});
     globalApi.getEvents(50).then((r) => setEvents(r.events)).catch(() => {});
     globalApi.getAuditLogs().then((r) => setToolLogs(r.tool_logs || [])).catch(() => {});
+    globalApi.getApprovals().then((r) => setApprovals(r.approvals || [])).catch(() => {});
   };
 
   useEffect(() => {
     refreshMeta();
-    fetch("/api/ai/tools").then((r) => r.json()).then((d) => setAvailableTools(Object.keys(d.tools || {}))).catch(() => {});
+    fetch("/api/ai/tools")
+      .then((r) => r.json())
+      .then((d) => setAvailableTools(Object.keys(d.tools || {})))
+      .catch(() => {});
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       const loadVoices = () => {
@@ -93,8 +180,51 @@ export const JarvisCommandApp: React.FC = () => {
       },
       onWorldEvent: () => refreshMeta(),
     });
-    return disconnect;
+
+    return () => {
+      disconnect();
+      cleanupAudioPipeline();
+      if (speakWaveRafRef.current !== null) cancelAnimationFrame(speakWaveRafRef.current);
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
   }, []);
+
+  // Animate clean silver waveform cadence while JARVIS is speaking (and not listening)
+  useEffect(() => {
+    if (speaking && !listening) {
+      const start = performance.now();
+      const step = (now: number) => {
+        const t = (now - start) / 1000;
+        const bars = Array.from({ length: WAVEFORM_BAR_COUNT }, (_, i) => {
+          const centerWeight = 1 - Math.abs(i - WAVEFORM_BAR_COUNT / 2) / (WAVEFORM_BAR_COUNT / 2);
+          const wave =
+            0.22 +
+            (0.35 + centerWeight * 0.4) *
+              Math.abs(Math.sin(t * 7.2 + i * 0.45) * Math.cos(t * 3.1 - i * 0.22));
+          return Math.min(1, Math.max(0.14, wave));
+        });
+        setWaveformBars(bars);
+        setAudioLevel(0.45 + Math.abs(Math.sin(t * 6.5)) * 0.35);
+        speakWaveRafRef.current = requestAnimationFrame(step);
+      };
+      speakWaveRafRef.current = requestAnimationFrame(step);
+      return () => {
+        if (speakWaveRafRef.current !== null) {
+          cancelAnimationFrame(speakWaveRafRef.current);
+          speakWaveRafRef.current = null;
+        }
+      };
+    } else if (!listening) {
+      setWaveformBars(Array.from({ length: WAVEFORM_BAR_COUNT }, () => 0.14));
+      setAudioLevel(0);
+    }
+  }, [speaking, listening]);
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages, loading]);
 
   const stopSpeaking = () => {
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
@@ -104,7 +234,14 @@ export const JarvisCommandApp: React.FC = () => {
   };
 
   const speakText = (text: string) => {
-    if (!autoSpeak || voiceMode === "text" || typeof window === "undefined" || !("speechSynthesis" in window)) return;
+    if (
+      !autoSpeak ||
+      voiceMode === "text" ||
+      typeof window === "undefined" ||
+      !("speechSynthesis" in window)
+    ) {
+      return;
+    }
     stopSpeaking();
     const u = new SpeechSynthesisUtterance(text);
     u.rate = voiceRate;
@@ -126,25 +263,87 @@ export const JarvisCommandApp: React.FC = () => {
     stopSpeaking();
     setInput("");
     setLoading(true);
+    setActiveDock("command");
     try {
       const reply = await globalApi.jarvisChat(query, "command-session-1");
       setMessages((prev) => [...prev, reply]);
-      if (reply.context?.active_country_id) setSelectedCountryId(reply.context.active_country_id);
+      if (reply.context?.active_country_id) {
+        setSelectedCountryId(reply.context.active_country_id);
+      }
       const routeCard = reply.structured_cards.find((c) => c.type === "route_comparison");
       if (routeCard?.data?.all_candidate_routes) {
         setCandidateRoutes(routeCard.data.all_candidate_routes);
       }
       speakText(reply.spoken_summary);
       refreshMeta();
+    } catch (err: any) {
+      setVoiceNotice(err?.message || "Command dispatch failed.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const hasExternalLlmKeys = useMemo(() => {
+    if (!providers?.providers) return false;
+    return Object.values(providers.providers).some((p) => (p?.active_keys ?? 0) > 0);
+  }, [providers]);
+
+  const handleExplainReply = async (reply: JarvisReply) => {
+    const isAlreadyExpanded = !!expandedExplainIds[reply.reply_id];
+    if (!hasExternalLlmKeys) {
+      setExpandedExplainIds((prev) => ({ ...prev, [reply.reply_id]: !isAlreadyExpanded }));
+      return;
+    }
+
+    setExplainingId(reply.reply_id);
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: reply.user_message,
+          session_id: reply.session_id || "command-session-1",
+          use_llm_polish: true,
+        }),
+      });
+      if (res.ok) {
+        const polished: JarvisReply = await res.json();
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.reply_id === reply.reply_id
+              ? {
+                  ...m,
+                  assistant_message: polished.assistant_message || m.assistant_message,
+                  provider: polished.provider || m.provider,
+                  model: polished.model || m.model,
+                  latency_ms: polished.latency_ms ?? m.latency_ms,
+                  structured_cards:
+                    polished.structured_cards?.length > 0
+                      ? polished.structured_cards
+                      : m.structured_cards,
+                  execution_trace:
+                    polished.execution_trace?.length > 0
+                      ? polished.execution_trace
+                      : m.execution_trace,
+                }
+              : m
+          )
+        );
+      }
+      setExpandedExplainIds((prev) => ({ ...prev, [reply.reply_id]: true }));
+    } catch {
+      setExpandedExplainIds((prev) => ({ ...prev, [reply.reply_id]: !isAlreadyExpanded }));
+    } finally {
+      setExplainingId(null);
     }
   };
 
   const startVoiceRecognition = () => {
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) {
-      setVoiceNotice("Browser speech recognition unavailable; type commands or use Chrome/Edge for live mic.");
+      setVoiceNotice(
+        "Browser speech recognition unavailable; type commands or use Chrome/Edge for live mic."
+      );
       return;
     }
     setVoiceNotice(null);
@@ -155,23 +354,35 @@ export const JarvisCommandApp: React.FC = () => {
     rec.onstart = () => {
       setListening(true);
       if (navigator.mediaDevices?.getUserMedia) {
-        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
-          micStreamRef.current = stream;
-          const ctx = new AudioContext();
-          audioCtxRef.current = ctx;
-          const src = ctx.createMediaStreamSource(stream);
-          const analyser = ctx.createAnalyser();
-          analyser.fftSize = 256;
-          src.connect(analyser);
-          const data = new Uint8Array(analyser.frequencyBinCount);
-          const tick = () => {
-            analyser.getByteFrequencyData(data);
-            const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
-            setAudioLevel(Math.min(1, avg / 95));
-            rafRef.current = requestAnimationFrame(tick);
-          };
-          tick();
-        }).catch(() => {});
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            micStreamRef.current = stream;
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            const ctx = new AudioCtx();
+            audioCtxRef.current = ctx;
+            const src = ctx.createMediaStreamSource(stream);
+            const analyser = ctx.createAnalyser();
+            analyser.fftSize = 128;
+            analyser.smoothingTimeConstant = 0.78;
+            src.connect(analyser);
+            const data = new Uint8Array(analyser.frequencyBinCount);
+            const tick = () => {
+              analyser.getByteFrequencyData(data);
+              const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
+              setAudioLevel(Math.min(1, avg / 95));
+              const step = Math.max(1, Math.floor(data.length / WAVEFORM_BAR_COUNT));
+              const bars: number[] = [];
+              for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
+                const v = data[Math.min(data.length - 1, i * step)] / 255;
+                bars.push(Math.max(0.14, Math.min(1, v * 1.35)));
+              }
+              setWaveformBars(bars);
+              rafRef.current = requestAnimationFrame(tick);
+            };
+            tick();
+          })
+          .catch(() => {});
       }
     };
     rec.onresult = (ev: any) => {
@@ -180,16 +391,12 @@ export const JarvisCommandApp: React.FC = () => {
     };
     rec.onerror = (ev: any) => {
       setListening(false);
+      cleanupAudioPipeline();
       setVoiceNotice(`Voice input status: ${ev.error}`);
     };
     rec.onend = () => {
       setListening(false);
-      setAudioLevel(0);
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
-      micStreamRef.current?.getTracks().forEach((tr) => tr.stop());
-      micStreamRef.current = null;
-      audioCtxRef.current?.close().catch(() => {});
-      audioCtxRef.current = null;
+      cleanupAudioPipeline();
     };
     recognitionRef.current = rec;
     rec.start();
@@ -199,255 +406,891 @@ export const JarvisCommandApp: React.FC = () => {
     if (listening) {
       recognitionRef.current?.stop();
       setListening(false);
+      cleanupAudioPipeline();
       return;
     }
     startVoiceRecognition();
   };
 
   const handleApproval = async (approvalId: string, approve: boolean) => {
-    if (approve) {
-      await globalApi.approveOperation(approvalId, true);
-      speakText(`Operation ${approvalId} approved and executed.`);
-    } else {
-      await globalApi.rejectOperation(approvalId);
-      speakText(`Operation ${approvalId} rejected.`);
+    try {
+      if (approve) {
+        await globalApi.approveOperation(approvalId, true);
+        setApprovalStatusMap((prev) => ({ ...prev, [approvalId]: "EXECUTED" }));
+        speakText(`Operation ${approvalId} approved and executed.`);
+      } else {
+        await globalApi.rejectOperation(approvalId);
+        setApprovalStatusMap((prev) => ({ ...prev, [approvalId]: "REJECTED" }));
+        speakText(`Operation ${approvalId} rejected.`);
+      }
+      if (editingApprovalId === approvalId) {
+        setEditingApprovalId(null);
+      }
+      refreshMeta();
+    } catch (err: any) {
+      setVoiceNotice(err?.message || `Failed to update approval ${approvalId}`);
     }
-    refreshMeta();
+  };
+
+  const openModifyApproval = (approval: ApprovalItem) => {
+    if (editingApprovalId === approval.approval_id) {
+      setEditingApprovalId(null);
+      setModifyError(null);
+      return;
+    }
+    setEditingApprovalId(approval.approval_id);
+    setModifyDraftJson(JSON.stringify(approval.parameters || {}, null, 2));
+    setModifyError(null);
+  };
+
+  const submitModifyApproval = async (approvalId: string) => {
+    try {
+      const parsed = JSON.parse(modifyDraftJson);
+      const res = await fetch(`/api/approvals/${approvalId}/modify`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ updates: parsed }),
+      });
+      if (!res.ok) {
+        throw new Error((await res.text()) || `HTTP ${res.status}`);
+      }
+      const updated: ApprovalItem = await res.json();
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.pending_approval?.approval_id === approvalId
+            ? { ...m, pending_approval: updated }
+            : m
+        )
+      );
+      setApprovalStatusMap((prev) => ({ ...prev, [approvalId]: "MODIFIED" }));
+      setEditingApprovalId(null);
+      setModifyError(null);
+      refreshMeta();
+    } catch (err: any) {
+      setModifyError(err?.message || "Invalid JSON parameters");
+    }
+  };
+
+  const runDirectTool = async (toolName: string) => {
+    setRunningTool(toolName);
+    try {
+      const res = await fetch(`/api/ai/tools/${toolName}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ country_id: selectedCountryId }),
+      });
+      const data = await res.json();
+      setToolRunResult({
+        tool: toolName,
+        duration_ms: data.duration_ms,
+        output: data.result ?? data,
+      });
+      refreshMeta();
+    } catch (err: any) {
+      setToolRunResult({ tool: toolName, output: { error: err?.message || "Tool call failed" } });
+    } finally {
+      setRunningTool(null);
+    }
+  };
+
+  const mergedLogs = useMemo(() => {
+    const normalizedTools = toolLogs.map((t, i) => ({
+      event_id: `TOOL-${i}-${t.timestamp}`,
+      timestamp: t.timestamp,
+      event_type: t.tool || "ai.tool",
+      category: "ai_tool",
+      country_id: t.payload?.country_id || t.arguments?.country_id || null,
+      duration_ms: t.duration_ms,
+      status: t.status,
+      summary: t.summary,
+      payload: t,
+    }));
+    const all = [...normalizedTools, ...events];
+    all.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+    return all.filter((item) => {
+      const cat = (item.category || "simulation").toLowerCase();
+      if (logFilter !== "all" && cat !== logFilter) return false;
+      if (logQuery.trim()) {
+        const hay = `${item.event_type || ""} ${item.summary || ""} ${item.country_id || ""}`.toLowerCase();
+        if (!hay.includes(logQuery.toLowerCase())) return false;
+      }
+      return true;
+    });
+  }, [events, toolLogs, logFilter, logQuery]);
+
+  const filteredTools = useMemo(() => {
+    const q = toolSearch.trim().toLowerCase();
+    if (!q) return availableTools;
+    return availableTools.filter((t) => t.toLowerCase().includes(q));
+  }, [availableTools, toolSearch]);
+
+  const pendingApprovalsCount = useMemo(
+    () => approvals.filter((a) => a.status === "PENDING").length,
+    [approvals]
+  );
+
+  const toggleDock = (tab: Exclude<DockTab, null>) => {
+    setActiveDock((cur) => (cur === tab ? null : tab));
+  };
+
+  const renderInlineApprovalCard = (approval: ApprovalItem) => {
+    const localStatus = approvalStatusMap[approval.approval_id] || approval.status;
+    const isFinalized = localStatus === "EXECUTED" || localStatus === "REJECTED";
+    const isEditing = editingApprovalId === approval.approval_id;
+
+    return (
+      <div className="p-3 rounded-lg bg-[#0F1012] border border-[#2A2D34] space-y-2">
+        <div className="flex items-start justify-between gap-2">
+          <div>
+            <div className="flex items-center gap-2">
+              <ShieldAlert className="w-3.5 h-3.5 text-[#FAFAFA] shrink-0" />
+              <span className="text-xs font-semibold text-[#FAFAFA]">{approval.title}</span>
+            </div>
+            <div className="text-[11px] text-[#A1A1AA] mt-0.5">{approval.description}</div>
+          </div>
+          <span className="px-2 py-0.5 rounded bg-[#16181C] border border-[#2A2D34] text-[10px] font-mono text-[#FAFAFA] shrink-0">
+            {approval.approval_id} · {localStatus}
+          </span>
+        </div>
+
+        {approval.parameters && Object.keys(approval.parameters).length > 0 && !isEditing && (
+          <div className="flex flex-wrap gap-1.5">
+            {Object.entries(approval.parameters).map(([k, v]) => (
+              <span
+                key={k}
+                className="px-1.5 py-0.5 rounded bg-[#16181C] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA]"
+              >
+                {k}: <span className="text-[#FAFAFA]">{String(v)}</span>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {isEditing && (
+          <div className="space-y-1.5">
+            <textarea
+              value={modifyDraftJson}
+              onChange={(e) => setModifyDraftJson(e.target.value)}
+              rows={4}
+              className="w-full bg-[#050505] border border-[#2A2D34] rounded p-2 text-[11px] font-mono text-[#FAFAFA] focus:outline-none focus:border-white/50"
+            />
+            {modifyError && <div className="text-[10px] font-mono text-[#A1A1AA]">{modifyError}</div>}
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => submitModifyApproval(approval.approval_id)}
+                className="px-2.5 py-1 rounded text-[11px] font-mono font-semibold bg-[#FAFAFA] text-[#050505] hover:bg-white/90"
+              >
+                Save Modifications
+              </button>
+              <button
+                onClick={() => setEditingApprovalId(null)}
+                className="px-2.5 py-1 rounded text-[11px] font-mono bg-[#16181C] border border-[#2A2D34] text-[#A1A1AA] hover:text-[#FAFAFA]"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
+
+        {!isFinalized && (
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <button
+              onClick={() => handleApproval(approval.approval_id, true)}
+              className="px-2.5 py-1 rounded text-[11px] font-mono font-semibold bg-[#FAFAFA] hover:bg-white text-[#050505] flex items-center gap-1 transition-colors"
+            >
+              <Check className="w-3.5 h-3.5" /> Approve & Execute
+            </button>
+            <button
+              onClick={() => openModifyApproval(approval)}
+              className="px-2.5 py-1 rounded text-[11px] font-mono bg-[#16181C] hover:bg-[#23262C] border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1 transition-colors"
+            >
+              <Edit3 className="w-3 h-3" /> Modify
+            </button>
+            <button
+              onClick={() => handleApproval(approval.approval_id, false)}
+              className="px-2.5 py-1 rounded text-[11px] font-mono bg-[#050505] hover:bg-[#16181C] border border-[#2A2D34] text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center gap-1 transition-colors"
+            >
+              <X className="w-3.5 h-3.5" /> Reject
+            </button>
+          </div>
+        )}
+      </div>
+    );
   };
 
   return (
-    <div className="w-screen h-screen bg-[#F7F8FA] text-slate-900 flex flex-col overflow-hidden font-sans">
-      {/* Light Top Aerospace & Voice Bar */}
-      <header className="h-11 px-4 bg-white border-b border-slate-200 flex items-center justify-between shrink-0">
+    <div className="w-screen h-screen bg-[#050505] text-[#FAFAFA] flex flex-col overflow-hidden font-sans relative select-none">
+      {/* Ultra-Sleek Stark Industries Top Command Strip */}
+      <header className="h-11 px-4 bg-[#0B0C0E]/90 backdrop-blur-md border-b border-[#2A2D34] flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3">
-          <Terminal className="w-4 h-4 text-blue-700" />
-          <span className="font-bold text-sm tracking-wide text-slate-900">JARVIS — VOICE & TACTICAL INTELLIGENCE</span>
-          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 font-semibold">
-            03 — JARVIS (:5175)
+          <div className="w-6 h-6 rounded bg-[#16181C] border border-[#2A2D34] flex items-center justify-center">
+            <Terminal className="w-3.5 h-3.5 text-[#FAFAFA]" />
+          </div>
+          <span className="font-semibold text-xs tracking-[0.18em] uppercase text-[#FAFAFA]">
+            J.A.R.V.I.S // TACTICAL CORE
+          </span>
+          <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#16181C] text-[#A1A1AA] border border-[#2A2D34]">
+            03 · :5175
           </span>
           <span
-            className={`text-[11px] font-mono px-2 py-0.5 rounded border flex items-center gap-1 font-semibold ${
+            className={`text-[10px] font-mono px-2 py-0.5 rounded border flex items-center gap-1.5 ${
               listening
-                ? "bg-red-50 border-red-300 text-red-700"
+                ? "bg-[#FAFAFA] border-[#FAFAFA] text-[#050505] font-semibold"
                 : speaking
-                ? "bg-emerald-50 border-emerald-300 text-emerald-700"
-                : "bg-slate-100 border-slate-200 text-slate-700"
+                ? "bg-[#16181C] border-white/40 text-[#FAFAFA]"
+                : "bg-[#0F1012] border-[#2A2D34] text-[#A1A1AA]"
             }`}
           >
-            <Radio className="w-3 h-3" />
-            {listening ? "MIC LISTENING" : speaking ? "JARVIS SPEAKING" : `VOICE ${voiceMode.toUpperCase()}`}
+            <Radio className={`w-3 h-3 ${listening ? "animate-pulse" : ""}`} />
+            {listening
+              ? "MIC LIVE"
+              : speaking
+              ? "VOICE SYNTH"
+              : `VOICE · ${voiceMode.toUpperCase()}`}
           </span>
         </div>
 
         <div className="flex items-center gap-2 text-[11px] font-mono">
           {providers && (
-            <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-slate-700">
-              GEMINI {providers.providers.gemini?.active_keys ?? 0}/3 · GROK {providers.providers.grok?.active_keys ?? 0}/3
+            <span className="hidden md:inline-flex px-2 py-0.5 rounded bg-[#0F1012] border border-[#2A2D34] text-[#A1A1AA]">
+              GEMINI {providers.providers.gemini?.active_keys ?? 0}/3 · GROK{" "}
+              {providers.providers.grok?.active_keys ?? 0}/3
             </span>
           )}
           <button
-            onClick={() => setVisualMode((m) => (m === "core" ? "map" : "core"))}
-            className="px-2.5 py-1 rounded bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 font-semibold"
+            onClick={() => setStageMode((m) => (m === "fullscreen" ? "split" : "fullscreen"))}
+            className="px-2.5 py-1 rounded bg-[#16181C] hover:bg-[#22252B] border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1.5 transition-colors"
+            title="Toggle between Full-Screen 3D JARVIS Core and Split Core + Flat Tactical Map"
           >
-            {visualMode === "core" ? "Show Flat Map" : "Show JARVIS Core"}
-          </button>
-          <button
-            onClick={() => setShowVoiceSettings((v) => !v)}
-            className="px-2 py-1 rounded bg-white hover:bg-slate-50 border border-slate-300 text-slate-700 flex items-center gap-1"
-          >
-            <Sliders className="w-3 h-3 text-blue-700" /> Voice Settings
+            {stageMode === "fullscreen" ? (
+              <>
+                <LayoutPanelLeft className="w-3.5 h-3.5 text-[#A1A1AA]" />
+                <span>Split Core + Map</span>
+              </>
+            ) : (
+              <>
+                <Maximize2 className="w-3.5 h-3.5 text-[#A1A1AA]" />
+                <span>Full-Screen 3D Core</span>
+              </>
+            )}
           </button>
           <span
-            className={`px-2 py-0.5 rounded border font-semibold ${
-              wsConnected ? "bg-emerald-50 border-emerald-300 text-emerald-700" : "bg-red-50 border-red-300 text-red-700"
+            className={`px-2 py-0.5 rounded border flex items-center gap-1.5 ${
+              wsConnected
+                ? "bg-[#16181C] border-white/25 text-[#FAFAFA]"
+                : "bg-[#0F1012] border-[#2A2D34] text-[#71717A]"
             }`}
           >
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                wsConnected ? "bg-[#FAFAFA]" : "bg-[#52525B]"
+              }`}
+            />
             {wsConnected ? "LIVE" : "OFFLINE"}
           </span>
         </div>
       </header>
 
-      {showVoiceSettings && (
-        <div className="px-4 py-2 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-4 text-xs font-mono text-slate-700">
-          <label className="flex items-center gap-2">
-            MODE:
-            <select value={voiceMode} onChange={(e) => setVoiceMode(e.target.value as any)} className="bg-white border border-slate-300 rounded px-2 py-0.5">
-              <option value="ptt">Push-to-Talk</option>
-              <option value="continuous">Continuous Voice Chat</option>
-              <option value="text">Text Only</option>
-            </select>
-          </label>
-          <label className="flex items-center gap-2">
-            VOICE:
-            <select value={selectedVoiceName} onChange={(e) => setSelectedVoiceName(e.target.value)} className="bg-white border border-slate-300 rounded px-2 py-0.5 max-w-[200px]">
-              {voices.map((v) => (
-                <option key={v.name} value={v.name}>{v.name}</option>
-              ))}
-            </select>
-          </label>
-          <label className="flex items-center gap-2">
-            RATE ({voiceRate.toFixed(2)}x):
-            <input type="range" min={0.7} max={1.5} step={0.05} value={voiceRate} onChange={(e) => setVoiceRate(parseFloat(e.target.value))} />
-          </label>
-          <label className="flex items-center gap-2">
-            VOL ({Math.round(voiceVolume * 100)}%):
-            <input type="range" min={0.1} max={1.0} step={0.1} value={voiceVolume} onChange={(e) => setVoiceVolume(parseFloat(e.target.value))} />
-          </label>
+      {/* Main Stage: Full-Bleed 3D JARVIS Core OR Split Core + Flat Tactical Map */}
+      <main className="flex-1 relative overflow-hidden flex bg-[#050505]">
+        <div
+          className={`relative h-full transition-all duration-300 ${
+            stageMode === "split" ? "w-1/2 border-r border-[#2A2D34]" : "w-full"
+          }`}
+        >
+          <JarvisNeuralCore3D
+            listening={listening}
+            speaking={speaking}
+            thinking={loading}
+            audioLevel={audioLevel}
+            statusLabel={
+              listening
+                ? "LISTENING · LIVE AUDIO STREAM"
+                : speaking
+                ? "SPEAKING · TACTICAL BRIEF"
+                : loading
+                ? "ORCHESTRATING TOOLS"
+                : `STANDBY · ${selectedCountryId} · ${availableTools.length || 50} TOOLS READY`
+            }
+          />
         </div>
-      )}
 
-      {/* Main Split: Flat Tactical Map + Live Logs | Voice Command Console */}
-      <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="h-[64%] relative">
-            {visualMode === "core" ? (
-              <JarvisNeuralCore3D
-                listening={listening}
-                speaking={speaking}
-                thinking={loading}
-                audioLevel={audioLevel}
-              />
-            ) : (
-              <TacticalFlatWorldMap
-                countries={overview?.countries || []}
-                disasters={overview?.active_disasters || []}
-                selectedCountryId={selectedCountryId}
-                onSelectCountry={(cid) => {
-                  setSelectedCountryId(cid);
-                  sendCommand(`View ${cid}`);
-                }}
-                drones={allDrones}
-                hospitals={allHospitals}
-                candidateRoutes={candidateRoutes}
-                title="JARVIS GEOPOLITICAL TACTICAL MAP — 7 NATIONS"
-              />
-            )}
-          </div>
-          <div className="h-[36%]">
-            <TacticalLiveLogsPanel
-              events={events}
-              toolLogs={toolLogs}
-              title="LIVE INTELLIGENCE, EVENT & AI TOOL STREAM"
+        {stageMode === "split" && (
+          <div className="w-1/2 h-full relative bg-[#0F1012]">
+            <TacticalFlatWorldMap
+              countries={overview?.countries || []}
+              disasters={overview?.active_disasters || []}
+              selectedCountryId={selectedCountryId}
+              onSelectCountry={(cid) => {
+                setSelectedCountryId(cid);
+                sendCommand(`View ${cid}`);
+              }}
+              drones={allDrones}
+              hospitals={allHospitals}
+              candidateRoutes={candidateRoutes}
+              title="JARVIS GEOPOLITICAL TACTICAL MAP — 7 NATIONS"
             />
           </div>
-        </div>
+        )}
 
-        {/* Right: Light JARVIS Voice Command Console */}
-        <aside className="w-[450px] bg-white border-l border-slate-200 flex flex-col shrink-0">
-          <div className="p-3 border-b border-slate-200 bg-slate-50 space-y-2">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={toggleVoiceInput}
-                  className={`px-3 py-1.5 rounded text-xs font-mono font-semibold flex items-center gap-1.5 border shadow-sm ${
-                    listening
-                      ? "bg-red-600 border-red-700 text-white animate-pulse"
-                      : "bg-blue-700 hover:bg-blue-600 border-blue-800 text-white"
-                  }`}
-                >
-                  {listening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-                  {listening ? "STOP MIC" : "SPEAK TO JARVIS"}
-                </button>
-                <button
-                  onClick={stopSpeaking}
-                  disabled={!speaking}
-                  className="px-2.5 py-1.5 rounded text-xs font-mono bg-amber-50 hover:bg-amber-100 disabled:opacity-40 border border-amber-300 text-amber-800 flex items-center gap-1"
-                >
-                  <Square className="w-3 h-3" /> Interrupt
-                </button>
+        {/* Popped-Up Frosted Obsidian Bottom Drawer Overlay (3D Core remains visible behind/above) */}
+        {activeDock !== null && (
+          <section className="absolute left-4 right-4 bottom-16 z-20 max-w-5xl mx-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex flex-col overflow-hidden max-h-[54vh] select-text">
+            {/* Drawer Header */}
+            <div className="px-4 py-2 bg-[#0F1012]/90 border-b border-[#2A2D34] flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-2 text-[11px] font-mono tracking-wider uppercase text-[#FAFAFA]">
+                {activeDock === "command" && (
+                  <>
+                    <Mic className="w-3.5 h-3.5 text-[#FAFAFA]" />
+                    <span>COMMAND & VOICE CONSOLE</span>
+                  </>
+                )}
+                {activeDock === "logs" && (
+                  <>
+                    <Terminal className="w-3.5 h-3.5 text-[#FAFAFA]" />
+                    <span>LIVE INTELLIGENCE & TOOL LOGS ({mergedLogs.length})</span>
+                  </>
+                )}
+                {activeDock === "tools" && (
+                  <>
+                    <Wrench className="w-3.5 h-3.5 text-[#FAFAFA]" />
+                    <span>LIVE BACKEND TOOLS ({availableTools.length || 50})</span>
+                  </>
+                )}
+                {activeDock === "approvals" && (
+                  <>
+                    <ShieldAlert className="w-3.5 h-3.5 text-[#FAFAFA]" />
+                    <span>OPERATOR APPROVALS ({pendingApprovalsCount} PENDING)</span>
+                  </>
+                )}
+                {activeDock === "voice" && (
+                  <>
+                    <Sliders className="w-3.5 h-3.5 text-[#FAFAFA]" />
+                    <span>VOICE & SYNTHESIS CALIBRATION</span>
+                  </>
+                )}
               </div>
+
               <button
-                onClick={() => setAutoSpeak((v) => !v)}
-                className={`p-1.5 rounded border ${
-                  autoSpeak ? "bg-emerald-50 border-emerald-300 text-emerald-700" : "bg-white border-slate-300 text-slate-500"
-                }`}
-                title="Auto-Speak Replies"
+                onClick={() => setActiveDock(null)}
+                className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#22252B] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA] hover:text-[#FAFAFA] flex items-center gap-1"
+                title="Collapse drawer to view full 3D JARVIS Core"
               >
-                {autoSpeak ? <Volume2 className="w-4 h-4" /> : <VolumeX className="w-4 h-4" />}
+                <ChevronDown className="w-3 h-3" /> Hide
               </button>
             </div>
 
-            <div className="h-6 bg-white rounded border border-slate-200 px-2 flex items-center justify-center gap-1">
-              {Array.from({ length: 24 }).map((_, i) => (
-                <div
-                  key={i}
-                  className={`w-1 rounded-full transition-all duration-150 ${
-                    listening ? "bg-red-500" : speaking ? "bg-emerald-600" : "bg-blue-200"
-                  }`}
-                  style={{ height: listening || speaking ? `${35 + ((i * 29) % 60)}%` : "22%" }}
-                />
-              ))}
-            </div>
-            {voiceNotice && <div className="text-[10px] font-mono text-amber-700">{voiceNotice}</div>}
-
-            <div className="flex flex-wrap gap-1">
-              {QUICK_COMMANDS.slice(0, 4).map((q) => (
-                <button
-                  key={q}
-                  onClick={() => sendCommand(q)}
-                  className="px-2 py-0.5 rounded text-[10px] bg-white hover:bg-blue-50 border border-slate-200 text-slate-700 truncate max-w-[205px]"
-                >
-                  {q}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-3 space-y-2.5 bg-[#F7F8FA]">
-            {messages.length === 0 && (
-              <div className="p-3 rounded bg-white border border-slate-200 text-xs text-slate-600 shadow-sm">
-                Click <strong>SPEAK TO JARVIS</strong> or type below. All {availableTools.length} backend tools are live and respond in under 5 ms.
-              </div>
-            )}
-            {messages.map((m) => (
-              <div key={m.reply_id} className="rounded bg-white border border-slate-200 p-3 space-y-2 shadow-sm">
-                <div className="flex items-center justify-between text-[10px] font-mono">
-                  <span className="text-blue-700 font-semibold">&gt; {m.user_message}</span>
-                  <span className="text-emerald-700 font-semibold">{m.latency_ms}ms</span>
-                </div>
-                <div className="text-xs text-slate-800 whitespace-pre-line leading-relaxed">{m.assistant_message}</div>
-
-                {m.pending_approval && (
-                  <div className="p-2.5 rounded bg-amber-50 border border-amber-200 space-y-2">
-                    <div className="text-xs font-semibold text-amber-900">{m.pending_approval.title}</div>
-                    <div className="flex gap-2">
+            {/* DRAWER 1: COMMAND & VOICE */}
+            {activeDock === "command" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {/* Voice Controls + Real Web Audio API Waveform */}
+                <div className="px-4 py-2.5 bg-[#0F1012]/80 border-b border-[#2A2D34] space-y-2 shrink-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
                       <button
-                        onClick={() => handleApproval(m.pending_approval!.approval_id, true)}
-                        className="px-2.5 py-1 rounded text-xs bg-emerald-700 hover:bg-emerald-600 text-white flex items-center gap-1"
+                        onClick={toggleVoiceInput}
+                        className={`px-3.5 py-1.5 rounded-lg text-xs font-mono font-semibold flex items-center gap-2 border transition-all ${
+                          listening
+                            ? "bg-[#FAFAFA] border-[#FAFAFA] text-[#050505] shadow-md"
+                            : "bg-[#16181C] hover:bg-[#FAFAFA] hover:text-[#050505] border-white/25 text-[#FAFAFA]"
+                        }`}
                       >
-                        <Check className="w-3.5 h-3.5" /> Approve & Execute
+                        {listening ? (
+                          <MicOff className="w-3.5 h-3.5" />
+                        ) : (
+                          <Mic className="w-3.5 h-3.5" />
+                        )}
+                        {listening ? "STOP MIC" : "SPEAK TO JARVIS"}
                       </button>
+
                       <button
-                        onClick={() => handleApproval(m.pending_approval!.approval_id, false)}
-                        className="px-2.5 py-1 rounded text-xs bg-red-600 hover:bg-red-500 text-white flex items-center gap-1"
+                        onClick={stopSpeaking}
+                        disabled={!speaking}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-mono bg-[#16181C] hover:bg-[#23262C] disabled:opacity-35 border border-[#2A2D34] text-[#FAFAFA] flex items-center gap-1.5 transition-colors"
                       >
-                        <X className="w-3.5 h-3.5" /> Reject
+                        <Square className="w-3 h-3" /> Interrupt
+                      </button>
+
+                      <button
+                        onClick={() => setAutoSpeak((v) => !v)}
+                        className={`px-2.5 py-1.5 rounded-lg text-xs font-mono border flex items-center gap-1.5 transition-colors ${
+                          autoSpeak
+                            ? "bg-[#FAFAFA] border-[#FAFAFA] text-[#050505] font-semibold"
+                            : "bg-[#0F1012] border-[#2A2D34] text-[#A1A1AA]"
+                        }`}
+                        title="Toggle Auto-Speak Replies"
+                      >
+                        {autoSpeak ? (
+                          <Volume2 className="w-3.5 h-3.5" />
+                        ) : (
+                          <VolumeX className="w-3.5 h-3.5" />
+                        )}
+                        Auto-Speak
                       </button>
                     </div>
+
+                    {/* Live Animated White/Silver Audio Waveform Bars */}
+                    <div className="h-8 flex-1 min-w-[180px] max-w-[320px] bg-[#050505] rounded-lg border border-[#2A2D34] px-2.5 flex items-center justify-center gap-[3px]">
+                      {waveformBars.map((lvl, i) => (
+                        <div
+                          key={i}
+                          className={`w-[3px] rounded-full transition-all duration-75 ${
+                            listening
+                              ? "bg-[#FAFAFA]"
+                              : speaking
+                              ? "bg-[#D4D4D8]"
+                              : "bg-[#3F3F46]"
+                          }`}
+                          style={{ height: `${Math.round(lvl * 100)}%` }}
+                        />
+                      ))}
+                    </div>
                   </div>
+
+                  {voiceNotice && (
+                    <div className="text-[10px] font-mono text-[#A1A1AA]">{voiceNotice}</div>
+                  )}
+
+                  <div className="flex flex-wrap gap-1.5">
+                    {QUICK_COMMANDS.slice(0, 4).map((q) => (
+                      <button
+                        key={q}
+                        onClick={() => sendCommand(q)}
+                        className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#22252B] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA] hover:text-[#FAFAFA] truncate max-w-[235px] transition-colors"
+                      >
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Conversation Transcript */}
+                <div className="flex-1 overflow-y-auto p-3.5 space-y-3 bg-[#050505]/70 min-h-[160px]">
+                  {messages.length === 0 && (
+                    <div className="p-3.5 rounded-xl bg-[#0F1012] border border-[#2A2D34] text-xs text-[#A1A1AA]">
+                      Press <strong className="text-[#FAFAFA]">SPEAK TO JARVIS</strong> or enter a
+                      tactical command below. All{" "}
+                      <span className="text-[#FAFAFA] font-mono">
+                        {availableTools.length || 50}
+                      </span>{" "}
+                      grounded backend tools are online.
+                    </div>
+                  )}
+
+                  {messages.map((m) => {
+                    const isExpanded = !!expandedExplainIds[m.reply_id];
+                    const isExplaining = explainingId === m.reply_id;
+                    return (
+                      <div
+                        key={m.reply_id}
+                        className="rounded-xl bg-[#0F1012] border border-[#2A2D34] p-3.5 space-y-2.5"
+                      >
+                        {/* Top Header: User Prompt + Latency Badge */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
+                          <span className="text-[#FAFAFA] font-semibold">
+                            &gt; {m.user_message}
+                          </span>
+                          <span className="px-2 py-0.5 rounded bg-[#16181C] border border-[#2A2D34] text-[#A1A1AA]">
+                            <span className="text-[#FAFAFA] font-semibold">
+                              {m.latency_ms} ms
+                            </span>{" "}
+                            · {m.provider || m.model || "instant_grounded_orchestrator"}
+                          </span>
+                        </div>
+
+                        {/* Frontend Command Chips */}
+                        {Array.isArray(m.frontend_commands) && m.frontend_commands.length > 0 && (
+                          <div className="flex flex-wrap gap-1.5">
+                            {m.frontend_commands.map((cmd, idx) => (
+                              <span
+                                key={idx}
+                                className="px-2 py-0.5 rounded-full bg-[#16181C] border border-white/20 text-[10px] font-mono text-[#FAFAFA]"
+                              >
+                                {formatFrontendCommandChip(cmd)}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+
+                        {/* Assistant Message Body */}
+                        <div className="text-xs text-[#E4E4E7] whitespace-pre-line leading-relaxed">
+                          {m.assistant_message}
+                        </div>
+
+                        {/* Inline Approval Card (no modal) */}
+                        {m.pending_approval && renderInlineApprovalCard(m.pending_approval)}
+
+                        {/* Footer Action Row: Explain Button */}
+                        <div className="flex items-center justify-between pt-1 border-t border-[#2A2D34]/70">
+                          <div className="text-[10px] font-mono text-[#71717A]">
+                            {m.execution_trace?.length || 0} tool steps ·{" "}
+                            {m.structured_cards?.length || 0} telemetry cards
+                          </div>
+                          <button
+                            onClick={() => handleExplainReply(m)}
+                            disabled={isExplaining}
+                            className="px-2.5 py-1 rounded bg-[#16181C] hover:bg-[#23262C] border border-[#2A2D34] text-[10px] font-mono text-[#FAFAFA] flex items-center gap-1.5 transition-colors"
+                          >
+                            <Sparkles className="w-3 h-3 text-[#A1A1AA]" />
+                            {isExplaining
+                              ? "Explaining..."
+                              : isExpanded
+                              ? "Hide Details"
+                              : "Explain"}
+                            {isExpanded ? (
+                              <ChevronUp className="w-3 h-3 text-[#A1A1AA]" />
+                            ) : (
+                              <ChevronDown className="w-3 h-3 text-[#A1A1AA]" />
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Expanded Structured Cards & Execution Trace */}
+                        {isExpanded && (
+                          <div className="space-y-2 pt-1">
+                            {m.structured_cards && m.structured_cards.length > 0 ? (
+                              m.structured_cards.map((card, cIdx) => (
+                                <div
+                                  key={cIdx}
+                                  className="p-2.5 rounded-lg bg-[#050505] border border-[#2A2D34] space-y-1.5"
+                                >
+                                  <div className="text-[10px] font-mono uppercase tracking-wider text-[#A1A1AA]">
+                                    STRUCTURED CARD · {card.type}
+                                  </div>
+                                  <pre className="text-[10px] font-mono text-[#E4E4E7] overflow-x-auto max-h-40 whitespace-pre-wrap">
+                                    {JSON.stringify(card.data, null, 2)}
+                                  </pre>
+                                </div>
+                              ))
+                            ) : (
+                              <div className="p-2 rounded bg-[#050505] border border-[#2A2D34] text-[10px] font-mono text-[#A1A1AA]">
+                                Grounded directly from live simulation telemetry (no external LLM
+                                keys required).
+                              </div>
+                            )}
+
+                            {m.execution_trace && m.execution_trace.length > 0 && (
+                              <div className="p-2.5 rounded-lg bg-[#050505] border border-[#2A2D34] space-y-1">
+                                <div className="text-[10px] font-mono uppercase tracking-wider text-[#A1A1AA]">
+                                  EXECUTION TRACE
+                                </div>
+                                {m.execution_trace.map((st, sIdx) => (
+                                  <div
+                                    key={sIdx}
+                                    className="flex items-center justify-between text-[10px] font-mono text-[#E4E4E7]"
+                                  >
+                                    <span>
+                                      {st.tool} — <span className="text-[#A1A1AA]">{st.summary}</span>
+                                    </span>
+                                    <span className="text-[#A1A1AA] shrink-0 ml-2">
+                                      {st.duration_ms} ms
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  <div ref={chatEndRef} />
+                </div>
+
+                {/* Command Input Bar */}
+                <div className="p-2.5 bg-[#0F1012] border-t border-[#2A2D34] flex items-center gap-2 shrink-0">
+                  <input
+                    value={input}
+                    onChange={(e) => setInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && sendCommand()}
+                    placeholder="Speak or type tactical command to J.A.R.V.I.S..."
+                    className="flex-1 bg-[#050505] border border-[#2A2D34] rounded-lg px-3 py-1.5 text-xs text-[#FAFAFA] placeholder:text-[#71717A] focus:outline-none focus:border-white/40"
+                  />
+                  <button
+                    onClick={() => sendCommand()}
+                    disabled={loading}
+                    className="px-3.5 py-1.5 rounded-lg bg-[#FAFAFA] hover:bg-white disabled:opacity-40 text-[#050505] text-xs font-mono font-semibold flex items-center gap-1.5 transition-colors"
+                  >
+                    <Send className="w-3.5 h-3.5" /> {loading ? "..." : "Send"}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {/* DRAWER 2: LOGS */}
+            {activeDock === "logs" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="px-3.5 py-2 bg-[#0F1012] border-b border-[#2A2D34] flex flex-wrap items-center justify-between gap-2 text-[11px] font-mono shrink-0">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(["all", "disaster", "ai_tool", "approval", "execution", "recovery"] as const).map(
+                      (cat) => (
+                        <button
+                          key={cat}
+                          onClick={() => setLogFilter(cat)}
+                          className={`px-2 py-0.5 rounded uppercase text-[10px] border transition-colors ${
+                            logFilter === cat
+                              ? "bg-[#FAFAFA] border-[#FAFAFA] text-[#050505] font-semibold"
+                              : "bg-[#16181C] border-[#2A2D34] text-[#A1A1AA] hover:text-[#FAFAFA]"
+                          }`}
+                        >
+                          {cat.replace("_", " ")}
+                        </button>
+                      )
+                    )}
+                  </div>
+                  <div className="relative">
+                    <Search className="w-3 h-3 text-[#71717A] absolute left-2 top-1.5" />
+                    <input
+                      value={logQuery}
+                      onChange={(e) => setLogQuery(e.target.value)}
+                      placeholder="Filter logs..."
+                      className="pl-6 pr-2 py-0.5 rounded bg-[#050505] border border-[#2A2D34] text-[11px] text-[#FAFAFA] placeholder:text-[#71717A] w-44 focus:outline-none focus:border-white/40"
+                    />
+                  </div>
+                </div>
+                <div className="flex-1 overflow-y-auto divide-y divide-[#2A2D34]/60 font-mono text-[11px] bg-[#050505]/80 min-h-[200px]">
+                  {mergedLogs.length === 0 && (
+                    <div className="p-4 text-[#71717A]">No matching events recorded yet.</div>
+                  )}
+                  {mergedLogs.slice(0, 80).map((item, idx) => {
+                    const cat = (item.category || "simulation").toLowerCase();
+                    const timeStr = (item.timestamp || "").split("T")[1]?.slice(0, 8) || "--:--:--";
+                    const isOpen = expandedLogIdx === idx;
+                    return (
+                      <div
+                        key={item.event_id || idx}
+                        onClick={() => setExpandedLogIdx(isOpen ? null : idx)}
+                        className="px-3.5 py-2 hover:bg-[#16181C]/70 cursor-pointer"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span className="text-[#71717A] shrink-0">{timeStr}</span>
+                          <span className="px-1.5 py-0.5 rounded text-[9px] uppercase border border-[#2A2D34] bg-[#16181C] text-[#E4E4E7] shrink-0">
+                            {cat.replace("_", " ")}
+                          </span>
+                          <span className="text-[#FAFAFA] font-semibold shrink-0">
+                            {item.event_type}
+                          </span>
+                          {item.country_id && (
+                            <span className="text-[#A1A1AA] shrink-0">[{item.country_id}]</span>
+                          )}
+                          <span className="text-[#A1A1AA] truncate flex-1">
+                            {item.summary || ""}
+                          </span>
+                          {item.duration_ms !== undefined && (
+                            <span className="text-[#FAFAFA] shrink-0">{item.duration_ms} ms</span>
+                          )}
+                        </div>
+                        {isOpen && item.payload && (
+                          <pre className="mt-2 p-2.5 rounded bg-[#0F1012] border border-[#2A2D34] text-[10px] text-[#E4E4E7] overflow-x-auto max-h-36">
+                            {JSON.stringify(item.payload, null, 2)}
+                          </pre>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* DRAWER 3: 50 TOOLS */}
+            {activeDock === "tools" && (
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="px-3.5 py-2 bg-[#0F1012] border-b border-[#2A2D34] flex items-center justify-between gap-2 shrink-0">
+                  <div className="relative flex-1 max-w-xs">
+                    <Search className="w-3.5 h-3.5 text-[#71717A] absolute left-2.5 top-2" />
+                    <input
+                      value={toolSearch}
+                      onChange={(e) => setToolSearch(e.target.value)}
+                      placeholder="Search tools..."
+                      className="w-full pl-8 pr-2.5 py-1 rounded bg-[#050505] border border-[#2A2D34] text-xs font-mono text-[#FAFAFA] placeholder:text-[#71717A] focus:outline-none focus:border-white/40"
+                    />
+                  </div>
+                  <span className="text-[10px] font-mono text-[#A1A1AA]">
+                    TARGET: <strong className="text-[#FAFAFA]">{selectedCountryId}</strong>
+                  </span>
+                </div>
+                <div className="flex-1 overflow-y-auto p-3.5 bg-[#050505]/80 space-y-3 min-h-[200px]">
+                  {toolRunResult && (
+                    <div className="p-3 rounded-lg bg-[#0F1012] border border-white/20 space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-mono">
+                        <span className="text-[#FAFAFA] font-semibold">
+                          RESULT · {toolRunResult.tool}
+                        </span>
+                        <div className="flex items-center gap-2">
+                          {toolRunResult.duration_ms !== undefined && (
+                            <span className="text-[#A1A1AA]">{toolRunResult.duration_ms} ms</span>
+                          )}
+                          <button
+                            onClick={() => setToolRunResult(null)}
+                            className="text-[#A1A1AA] hover:text-[#FAFAFA]"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                      <pre className="text-[10px] font-mono text-[#E4E4E7] overflow-x-auto max-h-36">
+                        {JSON.stringify(toolRunResult.output, null, 2)}
+                      </pre>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {filteredTools.map((t) => (
+                      <div
+                        key={t}
+                        className="px-2.5 py-2 rounded-lg bg-[#0F1012] border border-[#2A2D34] flex items-center justify-between gap-2"
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Cpu className="w-3 h-3 text-[#A1A1AA] shrink-0" />
+                          <span className="text-[11px] font-mono text-[#FAFAFA] truncate">{t}</span>
+                        </div>
+                        <button
+                          onClick={() => runDirectTool(t)}
+                          disabled={runningTool === t}
+                          className="px-2 py-0.5 rounded bg-[#16181C] hover:bg-[#FAFAFA] hover:text-[#050505] border border-[#2A2D34] text-[10px] font-mono text-[#FAFAFA] shrink-0 transition-colors"
+                        >
+                          {runningTool === t ? "..." : "Run"}
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* DRAWER 4: APPROVALS */}
+            {activeDock === "approvals" && (
+              <div className="flex-1 overflow-y-auto p-3.5 space-y-2.5 bg-[#050505]/80 min-h-[200px]">
+                {approvals.length === 0 ? (
+                  <div className="p-4 rounded-xl bg-[#0F1012] border border-[#2A2D34] text-xs font-mono text-[#A1A1AA]">
+                    No approval proposals queued. Ask J.A.R.V.I.S. to prepare a rescue plan, swarm,
+                    or mutual aid transfer.
+                  </div>
+                ) : (
+                  approvals.map((apr) => (
+                    <div key={apr.approval_id}>{renderInlineApprovalCard(apr)}</div>
+                  ))
                 )}
               </div>
-            ))}
-          </div>
+            )}
 
-          <div className="p-2.5 border-t border-slate-200 bg-white flex items-center gap-2">
-            <input
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && sendCommand()}
-              placeholder="Speak or type command..."
-              className="flex-1 bg-slate-50 border border-slate-300 rounded px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-blue-600"
-            />
-            <button
-              onClick={() => sendCommand()}
-              disabled={loading}
-              className="px-3 py-1.5 rounded bg-blue-700 hover:bg-blue-600 text-white text-xs font-medium flex items-center gap-1"
-            >
-              <Send className="w-3.5 h-3.5" /> Send
-            </button>
-          </div>
-        </aside>
-      </div>
+            {/* DRAWER 5: VOICE SETTINGS */}
+            {activeDock === "voice" && (
+              <div className="p-4 bg-[#050505]/85 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 text-xs font-mono">
+                <label className="flex flex-col gap-1.5 text-[#A1A1AA]">
+                  INPUT MODE
+                  <select
+                    value={voiceMode}
+                    onChange={(e) => setVoiceMode(e.target.value as any)}
+                    className="bg-[#0F1012] border border-[#2A2D34] rounded-lg px-2.5 py-1.5 text-[#FAFAFA] focus:outline-none focus:border-white/40"
+                  >
+                    <option value="ptt">Push-to-Talk</option>
+                    <option value="continuous">Continuous Voice Chat</option>
+                    <option value="text">Text Only</option>
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5 text-[#A1A1AA]">
+                  SYNTHESIS VOICE
+                  <select
+                    value={selectedVoiceName}
+                    onChange={(e) => setSelectedVoiceName(e.target.value)}
+                    className="bg-[#0F1012] border border-[#2A2D34] rounded-lg px-2.5 py-1.5 text-[#FAFAFA] focus:outline-none focus:border-white/40"
+                  >
+                    {voices.length === 0 && <option value="">Default System Voice</option>}
+                    {voices.map((v) => (
+                      <option key={v.name} value={v.name}>
+                        {v.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="flex flex-col gap-1.5 text-[#A1A1AA]">
+                  CADENCE RATE ({voiceRate.toFixed(2)}x)
+                  <input
+                    type="range"
+                    min={0.7}
+                    max={1.5}
+                    step={0.05}
+                    value={voiceRate}
+                    onChange={(e) => setVoiceRate(parseFloat(e.target.value))}
+                    className="accent-white"
+                  />
+                </label>
+
+                <label className="flex flex-col gap-1.5 text-[#A1A1AA]">
+                  OUTPUT VOLUME ({Math.round(voiceVolume * 100)}%)
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.0}
+                    step={0.1}
+                    value={voiceVolume}
+                    onChange={(e) => setVoiceVolume(parseFloat(e.target.value))}
+                    className="accent-white"
+                  />
+                </label>
+              </div>
+            )}
+          </section>
+        )}
+
+        {/* Sleek Floating Bottom Pop-Up Dock Pill Bar */}
+        <nav
+          aria-label="JARVIS Bottom Command Dock"
+          className="absolute bottom-3 left-1/2 -translate-x-1/2 z-30 px-2 py-1.5 rounded-full bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex items-center gap-1"
+        >
+          {(
+            [
+              { id: "logs", label: "LOGS", icon: Terminal },
+              { id: "command", label: "COMMAND & VOICE", icon: Mic },
+              {
+                id: "tools",
+                label: `${availableTools.length || 50} TOOLS`,
+                icon: Wrench,
+              },
+              {
+                id: "approvals",
+                label:
+                  pendingApprovalsCount > 0 ? `APPROVALS (${pendingApprovalsCount})` : "APPROVALS",
+                icon: ShieldAlert,
+              },
+              { id: "voice", label: "VOICE SETTINGS", icon: Sliders },
+            ] as const
+          ).map((item) => {
+            const Icon = item.icon;
+            const isActive = activeDock === item.id;
+            return (
+              <button
+                key={item.id}
+                onClick={() => toggleDock(item.id)}
+                className={`px-3 py-1.5 rounded-full text-[11px] font-mono tracking-wide flex items-center gap-1.5 transition-all whitespace-nowrap ${
+                  isActive
+                    ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
+                    : "bg-transparent text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#16181C]"
+                }`}
+              >
+                <Icon className="w-3.5 h-3.5" />
+                <span>{item.label}</span>
+              </button>
+            );
+          })}
+
+          <div className="w-px h-5 bg-[#2A2D34] mx-0.5" />
+
+          <button
+            onClick={() => setStageMode((m) => (m === "fullscreen" ? "split" : "fullscreen"))}
+            className={`px-3 py-1.5 rounded-full text-[11px] font-mono tracking-wide flex items-center gap-1.5 transition-all whitespace-nowrap ${
+              stageMode === "split"
+                ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
+                : "bg-transparent text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#16181C]"
+            }`}
+          >
+            <MapIcon className="w-3.5 h-3.5" />
+            <span>FLAT MAP</span>
+          </button>
+        </nav>
+      </main>
     </div>
   );
 };

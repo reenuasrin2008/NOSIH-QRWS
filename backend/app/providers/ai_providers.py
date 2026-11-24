@@ -1,10 +1,59 @@
 from __future__ import annotations
+import asyncio
 import os
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 import httpx
+
+DEFAULT_AI_TIMEOUT_SECONDS = 12.0
+
+
+def _get_timeout_seconds() -> float:
+    raw = os.getenv("AI_REQUEST_TIMEOUT_SECONDS", str(DEFAULT_AI_TIMEOUT_SECONDS)).strip()
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return DEFAULT_AI_TIMEOUT_SECONDS
+
+
+def build_provider_tool_payload(schemas: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Convert clean JSON-Schema tool definitions into Gemini and Grok/OpenAI provider payloads."""
+    gemini_declarations: List[Dict[str, Any]] = []
+    openai_tools: List[Dict[str, Any]] = []
+
+    for schema in schemas:
+        name = str(schema.get("name", "")).strip()
+        if not name:
+            continue
+        description = str(schema.get("description", "")).strip()
+        parameters = schema.get("parameters") or {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+
+        gemini_declarations.append({
+            "name": name,
+            "description": description,
+            "parameters": parameters,
+        })
+        openai_tools.append({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": description,
+                "parameters": parameters,
+            },
+        })
+
+    return {
+        "gemini": [{"function_declarations": gemini_declarations}],
+        "grok": openai_tools,
+        "openai": openai_tools,
+        "tool_count": len(gemini_declarations),
+    }
 
 
 @dataclass
@@ -100,9 +149,68 @@ class AIKeyPool:
         return out
 
 
+class SharedHTTPClientPool:
+    """Reusable httpx.AsyncClient pool with tight timeouts and keep-alive connection limits."""
+
+    def __init__(
+        self,
+        timeout_seconds: Optional[float] = None,
+        max_connections: int = 20,
+        max_keepalive_connections: int = 10,
+    ) -> None:
+        self.timeout_seconds = timeout_seconds or _get_timeout_seconds()
+        self.max_connections = max_connections
+        self.max_keepalive_connections = max_keepalive_connections
+        self._client: Optional[httpx.AsyncClient] = None
+        self._loop_id: Optional[int] = None
+
+    def get_client(self) -> httpx.AsyncClient:
+        try:
+            current_loop_id = id(asyncio.get_running_loop())
+        except RuntimeError:
+            current_loop_id = None
+
+        if (
+            self._client is None
+            or self._client.is_closed
+            or (current_loop_id is not None and self._loop_id is not None and self._loop_id != current_loop_id)
+        ):
+            timeout = httpx.Timeout(
+                timeout=self.timeout_seconds,
+                connect=min(5.0, self.timeout_seconds),
+                read=self.timeout_seconds,
+                write=min(5.0, self.timeout_seconds),
+                pool=min(5.0, self.timeout_seconds),
+            )
+            limits = httpx.Limits(
+                max_connections=self.max_connections,
+                max_keepalive_connections=self.max_keepalive_connections,
+                keepalive_expiry=30.0,
+            )
+            self._client = httpx.AsyncClient(timeout=timeout, limits=limits)
+            self._loop_id = current_loop_id
+        return self._client
+
+    async def aclose(self) -> None:
+        if self._client is not None and not self._client.is_closed:
+            await self._client.aclose()
+        self._client = None
+        self._loop_id = None
+
+
 class AIProvider(ABC):
+    def __init__(self, http_pool: Optional[SharedHTTPClientPool] = None) -> None:
+        self.http_pool = http_pool or SharedHTTPClientPool()
+
     @abstractmethod
-    async def generate(self, prompt: str, system_prompt: str, api_key: str, model: str) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str,
+        api_key: str,
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         ...
 
     @abstractmethod
@@ -111,29 +219,44 @@ class AIProvider(ABC):
 
 
 class GeminiAdapter(AIProvider):
-    async def generate(self, prompt: str, system_prompt: str, api_key: str, model: str) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str,
+        api_key: str,
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
-        payload = {
+        payload: Dict[str, Any] = {
             "system_instruction": {"parts": [{"text": system_prompt}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": {"temperature": 0.2, "maxOutputTokens": 900},
         }
-        timeout = float(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60"))
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        if tools:
+            payload["tools"] = tools
+        client = self.http_pool.get_client()
+        resp = await client.post(url, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"]
 
     async def health_check(self, api_key: str, model: str) -> bool:
         return bool(api_key and model)
 
 
 class GrokAdapter(AIProvider):
-    async def generate(self, prompt: str, system_prompt: str, api_key: str, model: str) -> str:
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str,
+        api_key: str,
+        model: str,
+        tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> str:
         url = "https://api.x.ai/v1/chat/completions"
         headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-        payload = {
+        payload: Dict[str, Any] = {
             "model": model,
             "messages": [
                 {"role": "system", "content": system_prompt},
@@ -141,35 +264,45 @@ class GrokAdapter(AIProvider):
             ],
             "temperature": 0.2,
         }
-        timeout = float(os.getenv("AI_REQUEST_TIMEOUT_SECONDS", "60"))
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-            return data["choices"][0]["message"]["content"]
+        if tools:
+            payload["tools"] = tools
+        client = self.http_pool.get_client()
+        resp = await client.post(url, headers=headers, json=payload)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
 
     async def health_check(self, api_key: str, model: str) -> bool:
         return bool(api_key and model)
 
 
 class AIProviderManager:
-    """Centralized provider router with primary/fallback failover and local deterministic fallback."""
+    """Centralized provider router with shared connection pooling, fast failover, and deterministic fallback."""
 
-    def __init__(self) -> None:
+    def __init__(self, timeout_seconds: Optional[float] = None) -> None:
         self.key_pool = AIKeyPool()
+        self.http_pool = SharedHTTPClientPool(timeout_seconds=timeout_seconds or _get_timeout_seconds())
         self.adapters: Dict[str, AIProvider] = {
-            "gemini": GeminiAdapter(),
-            "grok": GrokAdapter(),
+            "gemini": GeminiAdapter(http_pool=self.http_pool),
+            "grok": GrokAdapter(http_pool=self.http_pool),
         }
         self.primary_provider = os.getenv("AI_PRIMARY_PROVIDER", "gemini").lower()
         self.fallback_provider = os.getenv("AI_FALLBACK_PROVIDER", "grok").lower()
         self.last_latency_ms: float = 0.0
+
+    @staticmethod
+    def build_provider_tool_payload(schemas: List[Dict[str, Any]]) -> Dict[str, Any]:
+        return build_provider_tool_payload(schemas)
+
+    async def aclose(self) -> None:
+        await self.http_pool.aclose()
 
     async def synthesize_narrative(
         self,
         user_query: str,
         grounded_context: str,
         fallback_text: str,
+        tool_schemas: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """Try primary provider -> fallback provider -> deterministic grounded local fallback."""
         system_prompt = (
@@ -178,6 +311,7 @@ class AIProviderManager:
             "Never fabricate numbers, casualties, or capabilities. Keep responses concise, structured, and operational."
         )
         prompt = f"USER REQUEST: {user_query}\n\nAUTHORITATIVE SIMULATION DATA:\n{grounded_context}"
+        provider_tools = build_provider_tool_payload(tool_schemas) if tool_schemas else None
 
         for prov in (self.primary_provider, self.fallback_provider):
             model = os.getenv("GEMINI_MODEL" if prov == "gemini" else "GROK_MODEL", "").strip()
@@ -188,9 +322,17 @@ class AIProviderManager:
                 continue
             t0 = time.perf_counter()
             try:
-                text = await self.adapters[prov].generate(prompt, system_prompt, key.secret, model)
+                tools_arg = provider_tools.get(prov) if provider_tools else None
+                text = await self.adapters[prov].generate(
+                    prompt, system_prompt, key.secret, model, tools=tools_arg
+                )
                 self.last_latency_ms = round((time.perf_counter() - t0) * 1000.0, 1)
-                return {"text": text, "provider_used": prov, "model_used": model, "latency_ms": self.last_latency_ms}
+                return {
+                    "text": text,
+                    "provider_used": prov,
+                    "model_used": model,
+                    "latency_ms": self.last_latency_ms,
+                }
             except Exception as exc:
                 self.key_pool.record_error(key, str(exc), is_rate_limit=("429" in str(exc)))
 
@@ -205,6 +347,8 @@ class AIProviderManager:
         return {
             "primary_provider": self.primary_provider,
             "fallback_provider": self.fallback_provider,
+            "timeout_seconds": self.http_pool.timeout_seconds,
+            "connection_pooling": True,
             "last_latency_ms": self.last_latency_ms,
             "providers": self.key_pool.public_status(),
         }

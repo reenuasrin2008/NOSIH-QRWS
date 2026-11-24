@@ -8,10 +8,10 @@
 
 | Service | Localhost URL | Entry Point / Command | Role |
 | :--- | :--- | :--- | :--- |
-| **Shared Backend** | `http://127.0.0.1:8000` (`http://127.0.0.1:8000/docs`) | `cd backend && uvicorn app.main:app --reload --port 8000` | Authoritative 7-country world, continuous flood hydrology & wind-driven fire spread, 98 global drones, Yen's K-shortest route explorer, fast Quantum-Inspired QUBO Demo Optimizer, RBAC, Event Bus + Frontend Command Bus, 33-tool JARVIS orchestrator, Approval Engine, local JSON storage (`backend/local_data/`), and ZIP/GeoJSON exports |
+| **Shared Backend** | `http://127.0.0.1:8000` (`http://127.0.0.1:8000/docs`) | `cd backend && uvicorn app.main:app --reload --port 8000` | Authoritative 7-country world, continuous flood hydrology & wind-driven fire spread, 98 global drones, Yen's K-shortest route explorer, fast Quantum-Inspired QUBO Demo Optimizer, RBAC, Event Bus + Frontend Command Bus, 50-tool JARVIS orchestrator, Approval Engine, local JSON storage (`backend/local_data/`), and ZIP/GeoJSON exports |
 | **01 — World Command** | `http://localhost:5173` | `cd frontend && npm run dev:world` | 10×10 km continuous 7-country GTA-style flat open-world map (plus optional Orbital Globe view) with instanced skyscrapers, highways, 160 vehicles, 240 pedestrians, banking quadcopter drones, hospitals, shelters, disasters, and JARVIS camera sync |
 | **02 — Operations Command** | `http://localhost:5174` | `cd frontend && npm run dev:operations` | Aerospace/GIS Global Control Room: 7-country matrix, Country Editor, Disaster & Cascade Control, Ambulance & Supply Calculators, Fleet/Swarm/Routes, Counterfactuals, Mutual Aid, Rescue Equity, Approvals, E-Stop, and 4-Solver Benchmark Arena |
-| **03 — JARVIS Intelligence** | `http://localhost:5175` | `cd frontend && npm run dev:jarvis` | Universal Command Console with WebGL 3D Geospatial Globe, 1-click Direct AI Tool Runner (all 33 tools), Voice Push-to-Talk + Barge-In, 6-Key Gemini/Grok Provider Health HUD, inline Route/Disaster/Plan cards, Approval Cards, and Live Execution Trace |
+| **03 — JARVIS Intelligence** | `http://localhost:5175` | `cd frontend && npm run dev:jarvis` | Universal Command Console with WebGL 3D Geospatial Globe, 1-click Direct AI Tool Runner (all 50 tools), Voice Push-to-Talk + Barge-In, 6-Key Gemini/Grok Provider Health HUD, inline Route/Disaster/Plan cards, Approval Cards, and Live Execution Trace |
 
 ### Key Engineering Invariants (For AI Agents Modifying This Codebase)
 1. **Zero External Databases:** Do **not** add SQLite, PostgreSQL, SQLAlchemy, or Redis. All world snapshots and experiment runs are generated at runtime and persisted as plain JSON under `backend/local_data/` via `backend/app/database/repository.py`.
@@ -76,10 +76,21 @@ Copy `backend/.env.example` to `backend/.env` and set `GEMINI_API_KEY_1..3` / `G
 
 ---
 
+## 60-Second Demo Script
+
+1. **Open JARVIS Intelligence** at `http://localhost:5175`.
+2. **Send a compound Veridia cyclone/swarm/mutual-aid command** (for example: trigger/assess a severe cyclone in Veridia Basin, prepare an autonomous search drone swarm, and propose cross-border mutual aid).
+3. **Click `Approve & Execute`** on the generated operator authorization card(s) to commit the planned operations to the authoritative simulation backend.
+4. **Switch to World Command** at `http://localhost:5173` to watch the live disaster footprint, deployed swarm, and **recovery arcs** animate across the 3D open world.
+5. **Open Operations Command** at `http://localhost:5174` and inspect the **Run comparison** (4-World Counterfactual Digital Twin & 4-Solver Benchmark comparison).
+
+---
+
 ## 4. Automated Verification Commands (For CI & AI Agents)
 
-Run the full backend verification suite (20 tests + all 33 JARVIS direct tool calls):
+Run the full backend verification suite (20 tests + all 50 JARVIS direct tool calls; verify the live registry count with `python3 backend/scripts/report_tool_count.py`):
 ```bash
+python3 backend/scripts/report_tool_count.py
 cd backend
 python3 -m unittest discover -s tests -p "test_global_platform.py" -v
 pytest tests/test_quantum_rescue.py tests/test_advanced_modules.py -v

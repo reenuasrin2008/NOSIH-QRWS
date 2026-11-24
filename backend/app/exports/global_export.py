@@ -82,9 +82,9 @@ def build_global_experiment_zip(
         zf.writestr(f"{root}/resource_inventory.csv", _csv_bytes([to_dict(w) for w in world.warehouses.values()]))
         zf.writestr(f"{root}/swarm_operations.json", json.dumps([to_dict(s) for s in world.swarms.values()], indent=2))
         zf.writestr(f"{root}/route_calculation_logs.json", json.dumps(route_explorer.route_logs, indent=2))
-        zf.writestr(f"{root}/ai_interactions.json", json.dumps(jarvis.conversations, indent=2))
+        zf.writestr(f"{root}/ai_interactions.json", json.dumps({k: list(v) for k, v in jarvis.conversations.items()}, indent=2))
         zf.writestr(f"{root}/approval_history.json", json.dumps(approval_engine.list_approvals(), indent=2))
-        zf.writestr(f"{root}/audit_log.json", json.dumps(approval_engine.audit_log, indent=2))
+        zf.writestr(f"{root}/audit_log.json", json.dumps(list(approval_engine.audit_log), indent=2))
         zf.writestr(f"{root}/event_timeline.json", json.dumps(world.event_bus.get_events(limit=1000), indent=2))
         zf.writestr(f"{root}/world_routes.geojson", json.dumps(build_global_geojson(world), indent=2))
         zf.writestr(f"{root}/report.html", (

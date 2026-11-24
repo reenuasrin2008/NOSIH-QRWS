@@ -1,5 +1,6 @@
 from __future__ import annotations
 import uuid
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -50,7 +51,7 @@ class ApprovalEngine:
     def __init__(self, world: GlobalWorldEngine) -> None:
         self.world = world
         self.approvals: Dict[str, ApprovalRequest] = {}
-        self.audit_log: List[Dict[str, Any]] = []
+        self.audit_log: deque = deque(maxlen=5000)
 
     def _log_audit(self, action: str, actor: str, details: Dict[str, Any]) -> None:
         self.audit_log.append({

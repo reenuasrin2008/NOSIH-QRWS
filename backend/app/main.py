@@ -451,6 +451,7 @@ async def ws_simulation(ws: WebSocket):
 # QUANTUM RESCUE v2 — GLOBAL 7-COUNTRY LIVING WORLD, ROUTE INTELLIGENCE & JARVIS
 # ==============================================================================
 from app.api.global_routes import GlobalPlatformServices, build_global_router
+from app.api.structured_api import build_v2_router
 
 global_services = GlobalPlatformServices()
 global_ws_manager = ConnectionManager()
@@ -472,6 +473,7 @@ def _schedule_global_broadcast(msg: Dict[str, Any]) -> None:
 
 
 global_services.event_bus.subscribe(_schedule_global_broadcast)
+app.include_router(build_v2_router(global_services))
 app.include_router(
     build_global_router(
         global_services,

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Globe, MapPin, ShieldAlert, Radio, Compass } from "lucide-react";
-import { BigFlatOpenWorld3D } from "../simulation/BigFlatOpenWorld3D";
+import { DioramaOpenWorld3D } from "../simulation/DioramaOpenWorld3D";
 import { TacticalFlatWorldMap } from "../components/map/TacticalFlatWorldMap";
 import { connectGlobalWebSocket, globalApi } from "../shared/globalApi";
 import type { GlobalOverview } from "../shared/globalTypes";
@@ -116,7 +116,7 @@ export const WorldCommandApp: React.FC = () => {
       {/* Main Viewport */}
       <div className="flex-1 relative overflow-hidden">
         {viewMode === "flat" ? (
-          <BigFlatOpenWorld3D
+          <DioramaOpenWorld3D
             countries={overview?.countries || []}
             disasters={overview?.active_disasters || []}
             selectedCountryId={selectedCountryId}

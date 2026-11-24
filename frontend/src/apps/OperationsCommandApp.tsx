@@ -9,6 +9,7 @@ import {
   Navigation,
   OctagonAlert,
   Play,
+  RotateCcw,
   Shield,
   Users,
 } from "lucide-react";
@@ -33,6 +34,7 @@ export const OperationsCommandApp: React.FC = () => {
   const [mutualAid, setMutualAid] = useState<any>(null);
   const [routeComp, setRouteComp] = useState<any>(null);
   const [wsConnected, setWsConnected] = useState(false);
+  const [resettingDemo, setResettingDemo] = useState(false);
 
   // Disaster form state
   const [disType, setDisType] = useState("CYCLONE");
@@ -49,6 +51,20 @@ export const OperationsCommandApp: React.FC = () => {
     globalApi.getEvents(40).then((r) => setEvents(r.events)).catch(() => {});
     globalApi.getGlobalDrones().then((r) => setAllDrones(r.drones)).catch(() => {});
     fetch("/api/hospitals").then((r) => r.json()).then((d) => setAllHospitals(d.hospitals || [])).catch(() => {});
+  };
+
+  const handleResetDemo = async () => {
+    if (resettingDemo) return;
+    setResettingDemo(true);
+    try {
+      await fetch("/api/world/emergency-resume", { method: "POST" });
+      await fetch("/api/world/reset-local-snapshots", { method: "POST" });
+    } catch {
+      // Refresh dashboard regardless so operator sees authoritative state
+    } finally {
+      refreshAll();
+      setResettingDemo(false);
+    }
   };
 
   useEffect(() => {
@@ -135,6 +151,15 @@ export const OperationsCommandApp: React.FC = () => {
               <OctagonAlert className="w-3.5 h-3.5" /> E-STOP
             </button>
           )}
+          <button
+            onClick={handleResetDemo}
+            disabled={resettingDemo}
+            title="Demo-only reset: calls emergency-resume and resets local snapshots"
+            className="px-2.5 py-1 rounded text-xs font-medium bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-900 flex items-center gap-1 disabled:opacity-60"
+          >
+            <RotateCcw className="w-3 h-3 text-amber-600" />
+            {resettingDemo ? "Resetting..." : "Reset Demo (Demo Only)"}
+          </button>
           <span className={`text-[11px] font-mono px-2 py-0.5 rounded border ${wsConnected ? "border-emerald-700 text-emerald-300" : "border-red-800 text-red-300"}`}>
             {wsConnected ? "LIVE" : "OFFLINE"}
           </span>

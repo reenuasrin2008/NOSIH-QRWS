@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from app.ai.jarvis_agent import JarvisAgent
 from app.approvals.engine import PLAYBOOK_CATALOG, ApprovalEngine
@@ -143,6 +143,33 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
         repo = ExperimentRepository()
         path = repo.save_local_world_snapshot(services.world.get_global_overview())
         return {"saved": True, "storage": "local_json", "path": path}
+
+    @router.post("/world/reset-local-snapshots")
+    def reset_local_snapshots():
+        repo = ExperimentRepository()
+        removed = 0
+        if repo.base_dir.exists():
+            for fpath in list(repo.base_dir.rglob("*")):
+                if fpath.is_file():
+                    fpath.unlink()
+                    removed += 1
+        fresh_world = GlobalWorldEngine(services.event_bus)
+        services.world = fresh_world
+        services.route_explorer.world = fresh_world
+        services.approval_engine.world = fresh_world
+        services.jarvis.world = fresh_world
+        services.jarvis._country_lookup = services.jarvis._build_country_lookup()
+        services.event_bus.emit(
+            "world.reset_local_snapshots",
+            payload={"removed_files": removed, "seed": fresh_world.seed},
+            category="world",
+        )
+        return {
+            "reset": True,
+            "removed_files": removed,
+            "seed": fresh_world.seed,
+            "world_version": services.event_bus.world_version,
+        }
 
     @router.post("/world/tick")
     def tick_world(dt_seconds: float = Query(default=60.0, ge=1.0, le=3600.0)):
@@ -429,8 +456,19 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
     def execute_ai_tool(tool_name: str, args: Optional[Dict[str, Any]] = None):
         try:
             return services.jarvis.execute_tool_direct(tool_name, args or {})
+        except ValidationError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         except ValueError as e:
             raise HTTPException(status_code=404, detail=str(e))
+
+    @router.get("/ai/tools/schemas")
+    def ai_tool_schemas():
+        schemas = services.jarvis.get_tool_schemas()
+        return {
+            "count": len(schemas),
+            "schemas": schemas,
+            "provider_payloads": services.provider_manager.build_provider_tool_payload(schemas),
+        }
 
     @router.get("/ai/tools")
     def ai_tools():
@@ -438,7 +476,7 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
 
     @router.get("/ai/conversations/{session_id}")
     def ai_conversation_history(session_id: str):
-        return {"session_id": session_id, "messages": services.jarvis.conversations.get(session_id, [])}
+        return {"session_id": session_id, "messages": list(services.jarvis.conversations.get(session_id, []))}
 
     @router.get("/approvals")
     def list_approvals(status: Optional[str] = None):
@@ -481,7 +519,7 @@ def build_global_router(services: GlobalPlatformServices, get_legacy_summary) ->
 
     @router.get("/audit-logs")
     def get_audit_logs():
-        return {"audit_log": services.approval_engine.audit_log[-200:], "tool_logs": services.jarvis.tool_logs[-200:]}
+        return {"audit_log": list(services.approval_engine.audit_log)[-200:], "tool_logs": list(services.jarvis.tool_logs)[-200:]}
 
     @router.get("/frontend/commands")
     def get_frontend_commands():

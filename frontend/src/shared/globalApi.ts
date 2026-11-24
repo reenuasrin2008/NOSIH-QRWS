@@ -19,6 +19,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
 
 export const globalApi = {
   getOverview: () => req<GlobalOverview>("/api/world/overview"),
+  getV2Snapshot: () => req<any>("/api/v2/snapshot"),
+  getV2CountryBundle: (countryId: string) => req<any>(`/api/v2/country/${countryId}/bundle`),
+  getV2Table: (resource: string, countryId?: string) =>
+    req<any>(countryId ? `/api/v2/tables/${resource}?country_id=${countryId}` : `/api/v2/tables/${resource}`),
+  searchV2Entities: (q: string) => req<any>(`/api/v2/search?q=${encodeURIComponent(q)}`),
   getCountry: (countryId: string) => req<any>(`/api/countries/${countryId}`),
   updateCountry: (countryId: string, body: Record<string, any>) =>
     req<any>(`/api/countries/${countryId}`, { method: "PATCH", body: JSON.stringify(body) }),
