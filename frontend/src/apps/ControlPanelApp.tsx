@@ -17,6 +17,7 @@ import { QuantumCharts } from "../components/panels/QuantumCharts";
 import { StationStatusPanel } from "../components/panels/StationStatusPanel";
 import { DisasterStudioPanel } from "../components/panels/DisasterStudioPanel";
 import { agentApi } from "../api/agentClient";
+import { LiveWorldMap } from "../components/layout/LiveWorldMap";
 import { FailureInjectionModal } from "../components/modals/FailureInjectionModal";
 import { ExperimentHistoryModal } from "../components/modals/ExperimentHistoryModal";
 import { SettingsModal } from "../components/modals/SettingsModal";
@@ -564,6 +565,10 @@ export const ControlPanelApp: React.FC = () => {
 
               {centerTab === "remote" && (
                 <div className="grid grid-cols-2 gap-3">
+                  <div className="p-2.5 bg-[#050505] border border-[#262626] space-y-2">
+                    <div className="text-[10px] text-zinc-400 uppercase mb-1">Live World Map</div>
+                    <LiveWorldMap width={280} height={240} className="w-full" />
+                  </div>
                   <div className="p-2.5 bg-[#050505] border border-[#262626] space-y-2">
                     <div className="text-[10px] text-zinc-400 uppercase">3D Visual Camera Presets (:5173)</div>
                     <div className="grid grid-cols-2 gap-1.5">

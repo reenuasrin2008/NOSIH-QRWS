@@ -8,13 +8,8 @@ import {
 import { useSimStore } from "../state/simulationStore";
 import { api } from "../api/client";
 import { Jarvis3DCore, JarvisState } from "../components/panels/Jarvis3DCore";
-import {
-  agentApi,
-  AgentRuntimeStatus,
-  createAgentWebSocket,
-  ExecutionTrace,
-  ToolExecutionRecord,
-} from "../api/agentClient";
+import { agentApi, AgentRuntimeStatus, createAgentWebSocket, ExecutionTrace, ToolExecutionRecord } from "../api/agentClient";
+import { LiveWorldMap } from "../components/layout/LiveWorldMap";
 
 interface SpeechRecognitionLike {
   lang: string;
@@ -731,6 +726,11 @@ export const AgentConsoleApp: React.FC = () => {
             <div className="flex items-center justify-between border-b border-zinc-800 pb-2">
               <span className="font-bold text-amber-300 tracking-wider">J.A.R.V.I.S. SYSTEM HUD & LOGS</span>
               <button onClick={() => setDrawerOpen(false)} className="p-1 text-zinc-400 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            {/* Live World Map */}
+            <div className="space-y-1">
+              <div className="text-[9px] text-zinc-400 uppercase">Live World Map</div>
+              <LiveWorldMap width={358} height={260} />
             </div>
 
             {/* Quick Demo Choreography */}

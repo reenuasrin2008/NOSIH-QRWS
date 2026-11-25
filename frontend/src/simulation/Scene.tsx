@@ -13,6 +13,8 @@ import { RecoveryArcs } from "./RecoveryArcs";
 import { EnvironmentalEffects } from "./EnvironmentalEffects";
 import { DisasterVisuals } from "./DisasterVisuals";
 import { AiTacticalEffects } from "./AiTacticalEffects";
+import { BuildingAnimations } from "./BuildingAnimations";
+import { CollisionEffects } from "./CollisionEffects";
 import { CameraController } from "./CameraController";
 import { PlacementController } from "./PlacementController";
 import { SkyAtmosphere } from "./SkyAtmosphere";
@@ -133,6 +135,8 @@ export const Scene: React.FC = () => {
             <FlightPaths drones={effectiveDrones} ghostRoutes={ghostRoutes} />
             <RecoveryArcs arcs={activeState.recovery_arcs || []} drones={effectiveDrones} />
             <AiTacticalEffects />
+            <BuildingAnimations city={city} dayMode={dayMode} />
+            <CollisionEffects />
             <CameraController drones={effectiveDrones} worldSize={worldSize} />
             <PlacementController worldSize={worldSize} />
           </>

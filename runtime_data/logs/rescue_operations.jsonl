@@ -1,0 +1,1 @@
+{"logged_at": "2026-11-25T06:11:56.239651+00:00", "id": "EV-19A50854", "run_id": "RUN-EB4CF3", "timestamp_iso": "2026-11-25T06:11:56.239640+00:00", "sim_time_s": 0.0, "category": "task", "event_type": "tasks_generated", "message": "50 rescue tasks generated (12 critical, 15 high, 15 medium, 8 low).", "entity_id": null, "state_version": 1, "operation_id": null, "payload": {}}

@@ -1,0 +1,1 @@
+{"logged_at": "2026-11-25T06:11:56.239355+00:00", "id": "EV-BBB8E6E4", "run_id": "RUN-EB4CF3", "timestamp_iso": "2026-11-25T06:11:56.239340+00:00", "sim_time_s": 0.0, "category": "drone", "event_type": "fleet_registered", "message": "30 autonomous rescue drones registered across 4 classes.", "entity_id": null, "state_version": 1, "operation_id": null, "payload": {}}
