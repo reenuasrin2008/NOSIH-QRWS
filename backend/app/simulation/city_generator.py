@@ -28,29 +28,33 @@ def generate_city(
     river_z = 2000.0
     river_width = 160.0
 
-    # Arterial highway grid every 400m
+    # Dense road grid every 200m (major arterials every 400m, secondary every 200m)
     roads: List[RoadSegment] = []
-    h_lines = [400.0, 800.0, 1200.0, 1600.0, 2400.0, 2800.0, 3200.0, 3600.0]
+    h_lines = [200.0, 400.0, 600.0, 800.0, 1000.0, 1200.0, 1400.0, 1600.0,
+               2400.0, 2600.0, 2800.0, 3000.0, 3200.0, 3400.0, 3600.0, 3800.0]
+    major_h = {800.0, 1600.0, 2400.0, 3200.0}
     for idx, pos in enumerate(h_lines):
         roads.append(RoadSegment(
             id=f"RD-H-{idx+1}",
             start=(80.0, pos),
             end=(world - 80.0, pos),
-            width=36.0 if pos in (800.0, 1600.0, 2400.0, 3200.0) else 24.0,
+            width=36.0 if pos in major_h else 16.0,
             is_bridge=False,
             blocked=False,
         ))
 
-    v_lines = [400.0, 800.0, 1200.0, 1600.0, 2000.0, 2400.0, 2800.0, 3200.0, 3600.0]
+    v_lines = [200.0, 400.0, 600.0, 800.0, 1000.0, 1200.0, 1400.0, 1600.0,
+               2000.0, 2200.0, 2400.0, 2600.0, 2800.0, 3000.0, 3200.0, 3400.0, 3600.0, 3800.0]
+    major_v = {800.0, 1600.0, 2000.0, 2400.0, 3200.0}
     for idx, pos in enumerate(v_lines):
-        is_major = pos in (800.0, 1600.0, 2000.0, 2400.0, 3200.0)
+        is_major = pos in major_v
         roads.append(RoadSegment(
             id=f"RD-V-{idx+1}",
             start=(pos, 80.0),
             end=(pos, world - 80.0),
-            width=36.0 if is_major else 24.0,
+            width=36.0 if is_major else 16.0,
             is_bridge=is_major,
-            blocked=(pos == 2000.0),  # Central river bridge blocked in Demo
+            blocked=(pos == 2000.0),
         ))
 
     # 3 Major Hospitals + 5 Distributed Charging Hubs across the 4x4 km metropolis
@@ -104,9 +108,9 @@ def generate_city(
     b_counter = 1
     trees: List[Tuple[float, float, float]] = []
 
-    # 10x10 macro-blocks (each 400x400m) with 4x4 sub-plots => ~1,500+ buildings!
+    # 10x10 macro-blocks (each 400x400m) with 6x6 sub-plots => ~3,000+ buildings!
     block_centers = [200.0 + i * 400.0 for i in range(10)]
-    sub_offsets = [-130.0, -45.0, 45.0, 130.0]
+    sub_offsets = [-150.0, -90.0, -30.0, 30.0, 90.0, 150.0]
 
     for bx in block_centers:
         for bz in block_centers:
@@ -114,13 +118,13 @@ def generate_city(
             if abs(bz - river_z) < 160.0:
                 continue
 
-            # Dedicated Metropolitan Parks
-            if (bx == 1800.0 and bz == 2600.0) or (bx == 1400.0 and bz == 1000.0) or (bx == 2600.0 and bz == 1800.0):
+            # Dedicated Metropolitan Parks (reduced to 1 to keep density up)
+            if bx == 1800.0 and bz == 2600.0:
                 for _ in range(55):
                     trees.append((round(bx + rng.uniform(-160, 160), 1), round(bz + rng.uniform(-160, 160), 1), round(rng.uniform(1.4, 2.8), 2)))
                 continue
 
-            if rng.random() > min(1.0, 0.94 * city_density):
+            if rng.random() > min(1.0, 0.99 * city_density):
                 continue
 
             dist_center = math.hypot(bx - 2000.0, bz - 1800.0)
@@ -128,12 +132,12 @@ def generate_city(
 
             for sx in sub_offsets:
                 for sz in sub_offsets:
-                    if rng.random() > min(1.0, 0.78 * building_density):
-                        if rng.random() < 0.35:
+                    if rng.random() > min(1.0, 0.92 * building_density):
+                        if rng.random() < 0.18:
                             trees.append((round(bx + sx, 1), round(bz + sz, 1), round(rng.uniform(1.2, 2.4), 2)))
                         continue
-                    x = bx + sx + rng.uniform(-10.0, 10.0)
-                    z = bz + sz + rng.uniform(-10.0, 10.0)
+                    x = bx + sx + rng.uniform(-6.0, 6.0)
+                    z = bz + sz + rng.uniform(-6.0, 6.0)
                     if invalid_spot(x, z):
                         continue
 
@@ -177,36 +181,40 @@ def generate_city(
                     ))
                     b_counter += 1
 
-    # Streetlights along primary 4x4 km avenues
+    # Streetlights along all avenues (major + minor)
     streetlights: List[Tuple[float, float]] = []
-    for pos in [800.0, 1600.0, 2400.0, 3200.0]:
-        for t in range(160, 3860, 150):
-            streetlights.append((float(t), pos - 21.0))
-            streetlights.append((float(t), pos + 21.0))
+    for pos in [400.0, 800.0, 1200.0, 1600.0, 2400.0, 2800.0, 3200.0, 3600.0]:
+        for t in range(160, 3860, 80):
+            streetlights.append((float(t), pos - 20.0))
+            streetlights.append((float(t), pos + 20.0))
+    for pos in [400.0, 800.0, 1200.0, 1600.0, 2400.0, 2800.0, 3200.0, 3600.0]:
+        for t in range(160, 3860, 80):
+            streetlights.append((pos - 20.0, float(t)))
+            streetlights.append((pos + 20.0, float(t)))
 
-    # 80+ Moving Ground Vehicles (Civilian, Ambulances, Fire Trucks)
+    # 200+ Moving Ground Vehicles (Civilian, Ambulances, Fire Trucks)
     vehicles: List[VehicleProp] = []
     vid = 1
-    for pos in [800.0, 1600.0, 2400.0, 3200.0]:
-        for _ in range(12):
-            kind = rng.choice(["civilian", "civilian", "civilian", "ambulance", "fire_truck"])
+    for pos in [400.0, 800.0, 1200.0, 1600.0, 2400.0, 2800.0, 3200.0, 3600.0]:
+        for _ in range(18):
+            kind = rng.choice(["civilian", "civilian", "civilian", "civilian", "ambulance", "fire_truck"])
             vehicles.append(VehicleProp(
                 id=f"VEH-{vid:03d}", kind=kind,
                 x=round(rng.uniform(140.0, 3860.0), 1),
                 z=pos + rng.choice([-8.5, 8.5]),
                 heading_rad=math.pi / 2 if rng.random() < 0.5 else -math.pi / 2,
-                axis="x", speed_mps=rng.uniform(14.0, 24.0), road_pos=pos,
+                axis="x", speed_mps=rng.uniform(10.0, 26.0), road_pos=pos,
             ))
             vid += 1
-    for pos in [800.0, 1600.0, 2400.0, 3200.0]:
-        for _ in range(10):
-            kind = rng.choice(["civilian", "civilian", "ambulance"])
+    for pos in [400.0, 800.0, 1200.0, 1600.0, 2400.0, 2800.0, 3200.0, 3600.0]:
+        for _ in range(14):
+            kind = rng.choice(["civilian", "civilian", "civilian", "ambulance"])
             vehicles.append(VehicleProp(
                 id=f"VEH-{vid:03d}", kind=kind,
                 x=pos + rng.choice([-8.5, 8.5]),
                 z=round(rng.uniform(140.0, 3860.0), 1),
                 heading_rad=0.0 if rng.random() < 0.5 else math.pi,
-                axis="z", speed_mps=rng.uniform(14.0, 22.0), road_pos=pos,
+                axis="z", speed_mps=rng.uniform(10.0, 22.0), road_pos=pos,
             ))
             vid += 1
 

@@ -365,7 +365,7 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
       </mesh>
 
       {/* Distant Endless Horizon Skyline Ring */}
-      <instancedMesh ref={horizonRef} args={[undefined, undefined, horizonCount]}>
+      <instancedMesh ref={horizonRef} args={[undefined, undefined, horizonCount]} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial color={dayMode ? "#627285" : "#18202c"} roughness={0.95} />
       </instancedMesh>
@@ -447,43 +447,43 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
       {showBuildings && (
         <group>
           {commBlds.length > 0 && (
-            <instancedMesh ref={commRef} args={[undefined, undefined, commBlds.length]} castShadow receiveShadow>
+            <instancedMesh ref={commRef} args={[undefined, undefined, commBlds.length]} castShadow receiveShadow frustumCulled={false}>
               <boxGeometry args={[1, 1, 1]} />
               <meshStandardMaterial map={commTex} roughnessMap={commRough} roughness={1.0} metalness={0.48} />
             </instancedMesh>
           )}
           {resBlds.length > 0 && (
-            <instancedMesh ref={resRef} args={[undefined, undefined, resBlds.length]} castShadow receiveShadow>
+            <instancedMesh ref={resRef} args={[undefined, undefined, resBlds.length]} castShadow receiveShadow frustumCulled={false}>
               <boxGeometry args={[1, 1, 1]} />
               <meshStandardMaterial map={resTex} bumpMap={resBump} bumpScale={0.85} roughness={0.84} metalness={0.06} />
             </instancedMesh>
           )}
           {indBlds.length > 0 && (
-            <instancedMesh ref={indRef} args={[undefined, undefined, indBlds.length]} castShadow receiveShadow>
+            <instancedMesh ref={indRef} args={[undefined, undefined, indBlds.length]} castShadow receiveShadow frustumCulled={false}>
               <boxGeometry args={[1, 1, 1]} />
               <meshStandardMaterial color="#4d5560" roughness={0.88} metalness={0.14} />
             </instancedMesh>
           )}
           {allNonLmCount > 0 && (
-            <instancedMesh ref={roofRef} args={[undefined, undefined, allNonLmCount]}>
+            <instancedMesh ref={roofRef} args={[undefined, undefined, allNonLmCount]} frustumCulled={false}>
               <boxGeometry args={[1, 1, 1]} />
               <meshStandardMaterial color="#252b35" roughness={0.82} />
             </instancedMesh>
           )}
           {commBlds.length > 0 && (
             <>
-              <instancedMesh ref={podiumRef} args={[undefined, undefined, commBlds.length]} castShadow receiveShadow>
+              <instancedMesh ref={podiumRef} args={[undefined, undefined, commBlds.length]} castShadow receiveShadow frustumCulled={false}>
                 <boxGeometry args={[1, 1, 1]} />
                 <meshStandardMaterial color={dayMode ? "#4c5460" : "#1d232e"} roughness={0.72} metalness={0.22} />
               </instancedMesh>
-              <instancedMesh ref={spireRef} args={[undefined, undefined, commBlds.length]}>
+              <instancedMesh ref={spireRef} args={[undefined, undefined, commBlds.length]} frustumCulled={false}>
                 <cylinderGeometry args={[0.35, 1.0, 1, 6]} />
                 <meshStandardMaterial color="#94a3b8" metalness={0.8} roughness={0.25} />
               </instancedMesh>
             </>
           )}
           {resBlds.length > 0 && (
-            <instancedMesh ref={tankRef} args={[undefined, undefined, resBlds.length]}>
+            <instancedMesh ref={tankRef} args={[undefined, undefined, resBlds.length]} frustumCulled={false}>
               <cylinderGeometry args={[1, 1, 1, 10]} />
               <meshStandardMaterial color="#64748b" roughness={0.65} metalness={0.3} />
             </instancedMesh>
@@ -568,49 +568,49 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
       ))}
 
       {/* Instanced Streetlights */}
-      <instancedMesh ref={poleRef} args={[undefined, undefined, city.streetlights.length]}>
+      <instancedMesh ref={poleRef} args={[undefined, undefined, city.streetlights.length]} frustumCulled={false}>
         <cylinderGeometry args={[0.45, 0.6, 18, 5]} />
         <meshStandardMaterial color="#334155" metalness={0.6} />
       </instancedMesh>
-      <instancedMesh ref={lampRef} args={[undefined, undefined, city.streetlights.length]}>
+      <instancedMesh ref={lampRef} args={[undefined, undefined, city.streetlights.length]} frustumCulled={false}>
         <sphereGeometry args={[1.4, 6, 6]} />
         <meshBasicMaterial color={dayMode ? "#cbd5e1" : [1.8, 1.45, 0.85]} toneMapped={dayMode} />
       </instancedMesh>
 
       {/* Sculpted Moving Traffic: Chassis, Tinted Cabins, Headlights, Taillights & Flashing Sirens */}
-      <instancedMesh ref={carRef} args={[undefined, undefined, city.vehicles.length]} castShadow>
+      <instancedMesh ref={carRef} args={[undefined, undefined, city.vehicles.length]} castShadow frustumCulled={false}>
         <boxGeometry args={[3.8, 1.8, 7.4]} />
         <meshStandardMaterial roughness={0.32} metalness={0.55} />
       </instancedMesh>
-      <instancedMesh ref={cabinRef} args={[undefined, undefined, city.vehicles.length]}>
+      <instancedMesh ref={cabinRef} args={[undefined, undefined, city.vehicles.length]} frustumCulled={false}>
         <boxGeometry args={[3.2, 1.4, 3.8]} />
         <meshStandardMaterial color={dayMode ? "#1e293b" : "#0f172a"} roughness={0.14} metalness={0.86} />
       </instancedMesh>
-      <instancedMesh ref={headlightRef} args={[undefined, undefined, city.vehicles.length]}>
+      <instancedMesh ref={headlightRef} args={[undefined, undefined, city.vehicles.length]} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial color={dayMode ? "#fef9c3" : [2.0, 1.9, 1.5]} toneMapped={dayMode} />
       </instancedMesh>
-      <instancedMesh ref={taillightRef} args={[undefined, undefined, city.vehicles.length]}>
+      <instancedMesh ref={taillightRef} args={[undefined, undefined, city.vehicles.length]} frustumCulled={false}>
         <boxGeometry args={[1, 1, 1]} />
         <meshBasicMaterial color={dayMode ? "#dc2626" : [2.2, 0.2, 0.2]} toneMapped={dayMode} />
       </instancedMesh>
       {emergencyVehicles.length > 0 && (
-        <instancedMesh ref={sirenRef} args={[undefined, undefined, emergencyVehicles.length]}>
+        <instancedMesh ref={sirenRef} args={[undefined, undefined, emergencyVehicles.length]} frustumCulled={false}>
           <boxGeometry args={[1, 1, 1]} />
           <meshBasicMaterial toneMapped={false} />
         </instancedMesh>
       )}
 
       {/* Multi-Canopy Urban Park Trees */}
-      <instancedMesh ref={treeRef} args={[undefined, undefined, city.trees.length]} castShadow>
+      <instancedMesh ref={treeRef} args={[undefined, undefined, city.trees.length]} castShadow frustumCulled={false}>
         <dodecahedronGeometry args={[7.2, 1]} />
         <meshStandardMaterial color={dayMode ? "#2e633c" : "#193824"} roughness={0.9} />
       </instancedMesh>
-      <instancedMesh ref={treeTopRef} args={[undefined, undefined, city.trees.length]}>
+      <instancedMesh ref={treeTopRef} args={[undefined, undefined, city.trees.length]} frustumCulled={false}>
         <dodecahedronGeometry args={[5.8, 1]} />
         <meshStandardMaterial color={dayMode ? "#3b7a4a" : "#1f472c"} roughness={0.88} />
       </instancedMesh>
-      <instancedMesh ref={trunkRef} args={[undefined, undefined, city.trees.length]}>
+      <instancedMesh ref={trunkRef} args={[undefined, undefined, city.trees.length]} frustumCulled={false}>
         <cylinderGeometry args={[1.1, 1.5, 6.8, 5]} />
         <meshStandardMaterial color="#3b2618" roughness={0.95} />
       </instancedMesh>
