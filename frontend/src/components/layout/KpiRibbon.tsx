@@ -22,28 +22,28 @@ export const KpiRibbon: React.FC = () => {
   const q = activeState.quantum_metrics;
 
   return (
-    <div className="h-10 bg-[#0d121a] border-b border-[#242c3a] px-3 flex items-center justify-between gap-4 font-mono text-[11px] tabular-nums shrink-0 overflow-x-auto">
+    <div className="h-10 bg-[#0a0a0a] border-b border-[#262626] px-3 flex items-center justify-between gap-4 font-mono text-[11px] tabular-nums shrink-0 overflow-x-auto">
       {/* KPI 1: Missions */}
       <div className="flex items-center gap-2.5 min-w-[175px]">
         <div>
           <div className="text-[9px] text-zinc-500 uppercase leading-none">MISSIONS RESOLVED</div>
           <div className="text-zinc-100 font-semibold leading-tight mt-0.5">
-            {completed}/{tasks.length} <span className="text-emerald-400">({pct}%)</span>
+            {completed}/{tasks.length} <span className="text-neutral-200">({pct}%)</span>
           </div>
         </div>
-        <div className="w-16 h-1.5 bg-[#171d28] border border-[#242c3a]">
-          <div className="h-full bg-emerald-500 transition-all duration-300" style={{ width: `${pct}%` }} />
+        <div className="w-16 h-1.5 bg-[#171717] border border-[#262626]">
+          <div className="h-full bg-white transition-all duration-300" style={{ width: `${pct}%` }} />
         </div>
       </div>
 
       {/* KPI 2: Leading Strategy */}
-      <div className="flex items-center gap-2 pl-3 border-l border-[#242c3a] min-w-[180px]">
+      <div className="flex items-center gap-2 pl-3 border-l border-[#262626] min-w-[180px]">
         <div>
           <div className="text-[9px] text-zinc-500 uppercase leading-none">BENCHMARK LEADER</div>
           <div className="text-zinc-100 font-semibold leading-tight mt-0.5 uppercase">
             {leader ? `${leader.strategy} · ${leader.score.toFixed(1)}` : "STANDBY"}
             {deltaVsGreedy !== null && (
-              <span className={`ml-1.5 text-[10px] ${deltaVsGreedy >= 0 ? "text-emerald-400" : "text-amber-400"}`}>
+              <span className={`ml-1.5 text-[10px] ${deltaVsGreedy >= 0 ? "text-neutral-200" : "text-neutral-300"}`}>
                 {deltaVsGreedy >= 0 ? "+" : ""}{deltaVsGreedy.toFixed(1)} vs GREEDY
               </span>
             )}
@@ -52,28 +52,28 @@ export const KpiRibbon: React.FC = () => {
       </div>
 
       {/* KPI 3: Fleet Readiness */}
-      <div className="flex items-center gap-2 pl-3 border-l border-[#242c3a] min-w-[130px]">
+      <div className="flex items-center gap-2 pl-3 border-l border-[#262626] min-w-[130px]">
         <div>
           <div className="text-[9px] text-zinc-500 uppercase leading-none">FLEET READINESS</div>
           <div className="text-zinc-100 font-semibold leading-tight mt-0.5">
             {activeDrones}/{drones.length} OK
-            {lostDrones > 0 && <span className="ml-1.5 text-red-400">({lostDrones} LOST)</span>}
+            {lostDrones > 0 && <span className="ml-1.5 text-neutral-300">({lostDrones} LOST)</span>}
           </div>
         </div>
       </div>
 
       {/* KPI 4: Failure Recovery */}
-      <div className="flex items-center gap-2 pl-3 border-l border-[#242c3a] min-w-[140px]">
+      <div className="flex items-center gap-2 pl-3 border-l border-[#262626] min-w-[140px]">
         <div>
           <div className="text-[9px] text-zinc-500 uppercase leading-none">AUTO-RECOVERY</div>
           <div className="text-zinc-100 font-semibold leading-tight mt-0.5">
-            {metrics.tasks_recovered} TASKS <span className="text-emerald-400">({metrics.recovery_rate_pct}%)</span>
+            {metrics.tasks_recovered} TASKS <span className="text-neutral-200">({metrics.recovery_rate_pct}%)</span>
           </div>
         </div>
       </div>
 
       {/* KPI 5: Quantum Engine */}
-      <div className="flex items-center gap-2 pl-3 border-l border-[#242c3a] min-w-[170px]">
+      <div className="flex items-center gap-2 pl-3 border-l border-[#262626] min-w-[170px]">
         <div>
           <div className="text-[9px] text-zinc-500 uppercase leading-none">QAOA CIRCUIT ENGINE</div>
           <div className="text-zinc-200 font-semibold leading-tight mt-0.5">

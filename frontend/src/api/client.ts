@@ -1,9 +1,9 @@
-import { ServerPayload, StrategyType } from "../types/simulation";
+import { DisasterEvent, DisasterPreset, DisasterType, ServerPayload, StrategyType } from "../types/simulation";
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const res = await fetch(path, {
+    headers: { "Content-Type": "application/json" },
     ...options,
-    headers: { "Content-Type": "application/json", ...(options?.headers || {}) },
   });
   if (!res.ok) {
     const txt = await res.text();
@@ -46,6 +46,31 @@ export const api = {
     request<{ result: unknown; state: ServerPayload }>("/api/environment/events", {
       method: "POST", body: JSON.stringify({ event_kind, params }),
     }),
+
+  // Disaster Lifecycle Studio APIs
+  listDisasters: () => request<DisasterEvent[]>("/api/disasters"),
+  listDisasterPresets: () => request<DisasterPreset[]>("/api/disasters/presets"),
+  createDisaster: (body: {
+    type: DisasterType; x: number; z: number; severity: number;
+    affected_radius: number; duration: number; propagation_speed: number;
+    start_delay?: number; auto_start?: boolean; magnitude?: number;
+  }) => request<{ disaster: DisasterEvent; state_version: number }>("/api/disasters", { method: "POST", body: JSON.stringify(body) }),
+  loadDisasterPreset: (preset_id: string) =>
+    request<{ disasters: DisasterEvent[] }>("/api/disasters/preset", { method: "POST", body: JSON.stringify({ preset_id }) }),
+  triggerRandomDisaster: () =>
+    request<{ disasters: DisasterEvent[] }>("/api/disasters/random", { method: "POST", body: JSON.stringify({}) }),
+  startDisaster: (id: string) => request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/start`, { method: "POST" }),
+  pauseDisaster: (id: string) => request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/pause`, { method: "POST" }),
+  resumeDisaster: (id: string) => request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/resume`, { method: "POST" }),
+  stopDisaster: (id: string) => request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/stop`, { method: "POST" }),
+  removeDisaster: (id: string) => request<{ removed: boolean }>(`/api/disasters/${id}`, { method: "DELETE" }),
+  resetDisaster: (id: string) => request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/reset`, { method: "POST" }),
+  adjustDisasterSeverity: (id: string, delta: number) =>
+    request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/severity`, { method: "POST", body: JSON.stringify({ delta }) }),
+  triggerAftershock: (id: string) =>
+    request<{ disaster: DisasterEvent }>(`/api/disasters/${id}/aftershock`, { method: "POST", body: JSON.stringify({ scale: 0.65 }) }),
+
+  // JSON Experiment Archive & Replay
   saveExperiment: () => request<{ saved: boolean; run_id: string }>("/api/experiments/save", { method: "POST" }),
   listExperiments: () => request<Array<{ run_id: string; scenario_id: string; seed: number; strategy: string; status: string; sim_time_s: number; score: number; created_at: string }>>("/api/experiments"),
   getSavedReplay: (runId: string) => request<{ frames: Array<{ t: number; drones: Record<string, { pos: [number, number, number]; status: string; bat: number; hdg: number }>; tasks: Record<string, string> }>; run_id: string }>(`/api/experiments/${runId}/replay`),
@@ -69,22 +94,14 @@ export function createSimWebSocket(
 ) {
   let ws: WebSocket | null = null;
   let closed = false;
-  let reconnectTimer: number | undefined;
-  let retryDelayMs = 1000;
-  const MAX_RETRY_MS = 15000;
-
   const connect = () => {
-    if (closed) return;
     const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
     ws = new WebSocket(`${proto}//${window.location.host}/ws/simulation`);
-    ws.onopen = () => {
-      retryDelayMs = 1000;
-      onStatus(true);
-    };
+    ws.onopen = () => onStatus(true);
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data);
-        if (data && (data.type === "ui_command" || data.type === "ui_sync")) {
+        if (data && data.type === "ui_command") {
           onUiCommand?.(data as UiCommandMessage);
         } else if (data && data.benchmark) {
           onMessage(data as ServerPayload);
@@ -95,20 +112,10 @@ export function createSimWebSocket(
     };
     ws.onclose = () => {
       onStatus(false);
-      if (!closed) {
-        reconnectTimer = window.setTimeout(connect, retryDelayMs);
-        retryDelayMs = Math.min(MAX_RETRY_MS, retryDelayMs * 2);
-      }
+      if (!closed) setTimeout(connect, 1800);
     };
     ws.onerror = () => ws?.close();
   };
   connect();
-  return () => {
-    closed = true;
-    if (reconnectTimer !== undefined) {
-      window.clearTimeout(reconnectTimer);
-      reconnectTimer = undefined;
-    }
-    ws?.close();
-  };
+  return () => { closed = true; ws?.close(); };
 }

@@ -1,22 +1,92 @@
 export type StrategyType = "greedy" | "classical" | "quantum" | "hybrid";
-export type CameraMode = "orbit" | "topdown" | "follow" | "fpv" | "free";
+export type CameraMode = "orbit" | "topdown" | "follow" | "fpv" | "free" | "disaster_focus";
 export type PlacementMode = "none" | "add_target" | "set_waypoint";
+export type DisasterType = "flood" | "earthquake" | "fire" | "cyclone" | "building_collapse" | "landslide";
 
 export interface Building {
   id: string; kind: string; x: number; z: number;
   width: number; depth: number; height: number;
   color: string; has_helipad: boolean; roof_style: string;
+  integrity?: number;
+  damage_state?: string;
+  flood_depth_m?: number;
+  on_fire?: boolean;
+  debris_radius?: number;
 }
 
 export interface RoadSegment {
   id: string; start: [number, number]; end: [number, number];
   width: number; is_bridge: boolean; blocked: boolean;
+  flood_depth_m?: number;
+  fractured?: boolean;
+  obstructed_by_debris?: boolean;
 }
 
 export interface HazardZone {
   id: string; kind: "fire" | "flood" | "no_fly" | "blocked_area";
   x: number; z: number; radius: number; severity: number;
   altitude_ceiling: number; active: boolean;
+  disaster_event_id?: string | null;
+}
+
+export interface DisasterEvent {
+  event_id: string;
+  type: DisasterType;
+  status: string;
+  seed: number;
+  epicentre: { x: number; y: number; z: number };
+  severity: number;
+  affected_radius: number;
+  initial_radius: number;
+  max_radius: number;
+  propagation_speed: number;
+  start_time: number;
+  duration: number;
+  elapsed_time: number;
+  water_level_m: number;
+  flow_direction_deg: number;
+  magnitude: number;
+  aftershock_count: number;
+  wind_speed_mps: number;
+  smoke_direction_deg: number;
+  affected_buildings: string[];
+  affected_roads: string[];
+  related_tasks: string[];
+  related_survivors: string[];
+  hazard_id?: string | null;
+  parent_event_id?: string | null;
+  state_version: number;
+}
+
+export interface SimulatedSurvivor {
+  survivor_id: string;
+  position: [number, number, number];
+  status: string;
+  priority: "critical" | "high" | "medium" | "low";
+  health_level: number;
+  exposure_level: number;
+  location_type: string;
+  detected: boolean;
+  assigned_task_id: string | null;
+  disaster_event_id: string | null;
+  building_id: string | null;
+  last_updated_sim_time: number;
+}
+
+export interface DisasterPreset {
+  preset_id: string;
+  name: string;
+  description: string;
+  events: Array<Record<string, unknown>>;
+}
+
+export interface BuildingDamageSummary {
+  counts: Record<string, number>;
+  total_damaged: number;
+  damaged_buildings: Array<{
+    id: string; x: number; z: number; integrity: number;
+    damage_state: string; flood_depth_m: number; on_fire: boolean;
+  }>;
 }
 
 export interface Station {
@@ -33,6 +103,7 @@ export interface VehicleProp {
 export interface WeatherState {
   condition: string; wind_speed_mps: number; wind_direction_deg: number;
   rain_intensity: number; fog_density: number; day_mode: boolean;
+  visibility_m?: number; lightning_active?: boolean;
 }
 
 export interface CityEnvironment {
@@ -80,6 +151,8 @@ export interface RescueTask {
   assigned_drone_id: string | null; created_at_sim_s: number;
   completed_at_sim_s: number | null; reassignment_count: number;
   deadline_violated: boolean; unassigned_reason: string | null;
+  survivor_id?: string | null;
+  disaster_event_id?: string | null;
 }
 
 export interface QuantumMetrics {
@@ -106,6 +179,7 @@ export interface StrategyMetrics {
 export interface SimulationEvent {
   id: string; run_id: string; timestamp_iso: string; sim_time_s: number;
   category: string; event_type: string; message: string; entity_id: string | null;
+  state_version?: number;
 }
 
 export interface AnalyticsPoint {
@@ -115,8 +189,14 @@ export interface AnalyticsPoint {
 
 export interface ActiveSimState {
   run_id: string; strategy: StrategyType; status: string; seed: number;
+  state_version?: number;
   sim_time_s: number; speed_multiplier: number; weather: WeatherState;
-  hazards: HazardZone[]; stations: Station[]; drones: DroneState[];
+  hazards: HazardZone[];
+  disasters?: DisasterEvent[];
+  disaster_timeline?: Array<{ sim_time_s: number; event_id: string; action: string; detail: string }>;
+  survivors?: SimulatedSurvivor[];
+  building_damage_summary?: BuildingDamageSummary;
+  stations: Station[]; drones: DroneState[];
   tasks: RescueTask[]; metrics: StrategyMetrics; quantum_metrics: QuantumMetrics | null;
   analytics: AnalyticsPoint[]; events: SimulationEvent[]; city?: CityEnvironment;
   station_utilization?: Record<string, { occupied: number; capacity: number; queued: number }>;

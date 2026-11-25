@@ -34,7 +34,7 @@ export const BriefingModal: React.FC = () => {
             {[
               ["1. GREEDY BASELINE", "Nearest-eligible assignment + 3D A* navigation. Fast conventional baseline."],
               ["2. CLASSICAL OR-TOOLS", "Fleet-wide CP-SAT constrained optimization + CVRPTW stop sequencing."],
-              ["3. QUANTUM-INSPIRED", "Fast QUBO/Ising demo on reduced 4–8 variable critical-task subproblems with deterministic classical validation."],
+              ["3. QUANTUM QAOA", "Real Qiskit Aer / statevector QAOA on reduced 4–8 qubit critical QUBO subproblems + classical repair."],
               ["4. HYBRID ENGINE", "Combines classical feasibility with QAOA candidate refinement; strictly retains the better validated plan."],
             ].map(([title, desc]) => (
               <div key={title} className="p-2 bg-[#0b0e14] border border-[#242c3a]">

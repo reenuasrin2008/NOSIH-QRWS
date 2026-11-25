@@ -155,7 +155,7 @@ export const TopNav: React.FC = () => {
         <button
           onClick={() => setShowHistoryModal(true)}
           className="px-2 py-1 bg-[#171d28] hover:bg-[#1f2735] border border-[#2d3748] text-zinc-200 flex items-center gap-1"
-          title="Saved SQLite Experiments"
+          title="Saved JSON Experiments"
         >
           <Database className="w-3.5 h-3.5" /> ARCHIVE
         </button>

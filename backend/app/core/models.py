@@ -1,8 +1,25 @@
 from __future__ import annotations
-import app.core.compat  # noqa: F401
 from enum import Enum
 from typing import Dict, List, Optional, Tuple, Any
-from pydantic import BaseModel, Field
+from pydantic import BaseModel as _PydanticBaseModel, Field
+
+
+class BaseModel(_PydanticBaseModel):
+    """Pydantic v1/v2 compatible BaseModel."""
+
+    if not hasattr(_PydanticBaseModel, "model_dump"):
+        def model_dump(self, *args, **kwargs):
+            return self.dict(*args, **kwargs)
+
+    if not hasattr(_PydanticBaseModel, "model_validate"):
+        @classmethod
+        def model_validate(cls, obj):
+            return cls.parse_obj(obj)
+
+    if not hasattr(_PydanticBaseModel, "model_copy"):
+        def model_copy(self, *, update=None, deep=False):
+            return self.copy(update=update, deep=deep)
+
 
 
 class SimulationStatus(str, Enum):
@@ -66,6 +83,106 @@ class StrategyType(str, Enum):
     HYBRID = "hybrid"
 
 
+class BuildingDamageState(str, Enum):
+    INTACT = "INTACT"
+    MINOR_DAMAGE = "MINOR_DAMAGE"
+    MODERATE_DAMAGE = "MODERATE_DAMAGE"
+    SEVERE_DAMAGE = "SEVERE_DAMAGE"
+    COLLAPSED = "COLLAPSED"
+
+
+class DisasterType(str, Enum):
+    FLOOD = "flood"
+    EARTHQUAKE = "earthquake"
+    FIRE = "fire"
+    CYCLONE = "cyclone"
+    BUILDING_COLLAPSE = "building_collapse"
+    LANDSLIDE = "landslide"
+
+
+class DisasterStatus(str, Enum):
+    CREATED = "CREATED"
+    SCHEDULED = "SCHEDULED"
+    ACTIVE = "ACTIVE"
+    INTENSIFYING = "INTENSIFYING"
+    PROPAGATING = "PROPAGATING"
+    STABILIZING = "STABILIZING"
+    CONTAINED = "CONTAINED"
+    PAUSED = "PAUSED"
+    RESOLVED = "RESOLVED"
+
+
+class SurvivorStatus(str, Enum):
+    UNCONFIRMED = "UNCONFIRMED"
+    DETECTED = "DETECTED"
+    LOCATED = "LOCATED"
+    RESCUE_PENDING = "RESCUE_PENDING"
+    RESCUE_IN_PROGRESS = "RESCUE_IN_PROGRESS"
+    EVACUATED = "EVACUATED"
+    MEDICAL_ASSISTANCE = "MEDICAL_ASSISTANCE"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+class SurvivorLocationType(str, Enum):
+    ROOFTOP = "ROOFTOP"
+    TRAPPED_DEBRIS = "TRAPPED_DEBRIS"
+    FLOODED_STREET = "FLOODED_STREET"
+    SHELTER = "SHELTER"
+    BRIDGE = "BRIDGE"
+    OPEN_GROUND = "OPEN_GROUND"
+
+
+class Epicentre(BaseModel):
+    x: float
+    y: float = 0.0
+    z: float
+
+
+class DisasterEvent(BaseModel):
+    event_id: str
+    type: DisasterType
+    status: DisasterStatus = DisasterStatus.CREATED
+    seed: int = 20261124
+    epicentre: Epicentre
+    severity: float = Field(default=0.75, ge=0.05, le=1.0)
+    affected_radius: float = Field(default=260.0, ge=30.0, le=2000.0)
+    initial_radius: float = Field(default=260.0, ge=30.0, le=2000.0)
+    max_radius: float = Field(default=650.0, ge=50.0, le=2400.0)
+    propagation_speed: float = Field(default=1.0, ge=0.1, le=5.0)
+    start_time: float = 0.0
+    duration: float = Field(default=900.0, ge=30.0, le=7200.0)
+    elapsed_time: float = 0.0
+    water_level_m: float = 0.0
+    flow_direction_deg: float = 135.0
+    magnitude: float = 0.0
+    aftershock_count: int = 0
+    wind_speed_mps: float = 0.0
+    smoke_direction_deg: float = 135.0
+    affected_buildings: List[str] = Field(default_factory=list)
+    affected_roads: List[str] = Field(default_factory=list)
+    related_tasks: List[str] = Field(default_factory=list)
+    related_survivors: List[str] = Field(default_factory=list)
+    hazard_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
+    state_version: int = 1
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class SimulatedSurvivor(BaseModel):
+    survivor_id: str
+    position: Tuple[float, float, float]
+    status: SurvivorStatus = SurvivorStatus.UNCONFIRMED
+    priority: TaskPriority = TaskPriority.HIGH
+    health_level: float = Field(default=0.72, ge=0.0, le=1.0)
+    exposure_level: float = Field(default=0.65, ge=0.0, le=1.0)
+    location_type: SurvivorLocationType = SurvivorLocationType.ROOFTOP
+    detected: bool = False
+    assigned_task_id: Optional[str] = None
+    disaster_event_id: Optional[str] = None
+    building_id: Optional[str] = None
+    last_updated_sim_time: float = 0.0
+
+
 class Building(BaseModel):
     id: str
     kind: str
@@ -77,6 +194,11 @@ class Building(BaseModel):
     color: str
     has_helipad: bool = False
     roof_style: str = "flat"
+    integrity: float = 1.0
+    damage_state: BuildingDamageState = BuildingDamageState.INTACT
+    flood_depth_m: float = 0.0
+    on_fire: bool = False
+    debris_radius: float = 0.0
 
 
 class RoadSegment(BaseModel):
@@ -86,6 +208,9 @@ class RoadSegment(BaseModel):
     width: float
     is_bridge: bool = False
     blocked: bool = False
+    flood_depth_m: float = 0.0
+    fractured: bool = False
+    obstructed_by_debris: bool = False
 
 
 class HazardZone(BaseModel):
@@ -97,6 +222,7 @@ class HazardZone(BaseModel):
     severity: float = 0.8
     altitude_ceiling: float = 120.0
     active: bool = True
+    disaster_event_id: Optional[str] = None
 
 
 class Station(BaseModel):
@@ -125,6 +251,8 @@ class WeatherState(BaseModel):
     wind_direction_deg: float = 135.0
     rain_intensity: float = 0.25
     fog_density: float = 0.12
+    visibility_m: float = 1200.0
+    lightning_active: bool = False
     day_mode: bool = False
 
 
@@ -220,6 +348,8 @@ class RescueTask(BaseModel):
     description: str = ""
     status: TaskStatus = TaskStatus.PENDING
     assigned_drone_id: Optional[str] = None
+    survivor_id: Optional[str] = None
+    disaster_event_id: Optional[str] = None
     created_at_sim_s: float = 0.0
     assigned_at_sim_s: Optional[float] = None
     started_at_sim_s: Optional[float] = None
@@ -277,6 +407,8 @@ class SimulationEvent(BaseModel):
     event_type: str
     message: str
     entity_id: Optional[str] = None
+    state_version: int = 0
+    operation_id: Optional[str] = None
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 

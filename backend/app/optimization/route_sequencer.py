@@ -18,7 +18,7 @@ def sequence_drone_tasks(
     Finds the exact minimum-cost visit order minimizing travel time + priority-weighted
     lateness across all permutations (for <= 6 stops) or greedy nearest-deadline insertion.
     """
-    valid = list(dict.fromkeys(tid for tid in task_ids if tid in tasks))
+    valid = [tid for tid in task_ids if tid in tasks]
     if len(valid) <= 1:
         return valid
 
@@ -34,7 +34,7 @@ def sequence_drone_tasks(
             travel_s = dist / speed
             t_cur += travel_s + task.service_time_seconds
             lateness = max(0.0, t_cur - task.deadline_seconds)
-            w = PRIO_PENALTY.get(task.priority.value, 1.0)
+            w = PRIO_PENALTY[task.priority.value]
             cost += travel_s + (lateness * 3.5 * w) + (t_cur * 0.12 * w)
             cur_x, cur_z = task.location[0], task.location[2]
         return cost
@@ -54,7 +54,7 @@ def sequence_drone_tasks(
             key=lambda tid: (
                 math.hypot(tasks[tid].location[0] - cur_x, tasks[tid].location[2] - cur_z) / speed
                 + max(0.0, tasks[tid].deadline_seconds - t_cur) * 0.35
-            ) / PRIO_PENALTY.get(tasks[tid].priority.value, 1.0),
+            ) / PRIO_PENALTY[tasks[tid].priority.value],
         )
         ordered.append(nxt)
         remaining.remove(nxt)

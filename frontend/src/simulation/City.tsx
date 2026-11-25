@@ -51,24 +51,6 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
   const riverMat = useMemo(() => createRealisticWaterMaterial(dayMode, 0.55, 0.96), [dayMode]);
   const oceanMat = useMemo(() => createRealisticWaterMaterial(dayMode, 1.35, 0.98), [dayMode]);
 
-  useEffect(() => {
-    return () => {
-      commTex.dispose();
-      resTex.dispose();
-      riverMat.dispose();
-      oceanMat.dispose();
-    };
-  }, [commTex, resTex, riverMat, oceanMat]);
-
-  useEffect(() => {
-    return () => {
-      commRough.dispose();
-      resBump.dispose();
-      roadTex.dispose();
-      groundTex.dispose();
-    };
-  }, [commRough, resBump, roadTex, groundTex]);
-
   // Partition 1,000+ buildings into 3 GPU-instanced batches + landmarks
   const { commBlds, resBlds, indBlds, landmarks, tallBeacons } = useMemo(() => {
     const comm: typeof city.buildings = [];
@@ -116,7 +98,12 @@ export const City: React.FC<{ city: CityEnvironment; stations: Station[]; dayMod
         dummy.scale.set(b.width, b.height, b.depth);
         dummy.updateMatrix();
         mesh.setMatrixAt(i, dummy.matrix);
-        color.set(b.color);
+        const gtaComm = ["#3b6e8c", "#4f7fa3", "#648da8", "#c8a97e", "#7a9bb5", "#9fb4c7", "#537895", "#b89f82"];
+        const gtaRes = ["#d6c3a5", "#c9967a", "#e0d4be", "#b88b6e", "#c4b7a6", "#d4a88c", "#9da9b0", "#cbb99d"];
+        const gtaInd = ["#9e6b52", "#7a868c", "#b58b57", "#6e7a80", "#a67558", "#8f9491"];
+        const pal = b.kind === "commercial" ? gtaComm : (b.kind === "industrial" || b.kind === "warehouse") ? gtaInd : gtaRes;
+        const hash = Math.abs(Math.round(b.x * 13 + b.z * 7));
+        color.set(pal[hash % pal.length]);
         mesh.setColorAt(i, color);
       });
       mesh.instanceMatrix.needsUpdate = true;

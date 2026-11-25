@@ -19,7 +19,6 @@ interface SimStore {
   selectedTaskId: string | null;
   cameraMode: CameraMode;
   cameraFocusPoint: [number, number, number] | null;
-  cameraTransition: "smooth" | "instant";
 
   placementMode: PlacementMode;
   pendingLocation: [number, number, number] | null;
@@ -31,7 +30,7 @@ interface SimStore {
   showShortcutsModal: boolean;
   showBriefingModal: boolean;
   stageMode: boolean;
-  criticalAlert: { title: string; detail: string; kind: 'failure' | 'replan' | 'info' } | null;
+  criticalAlert: { title: string; detail: string; kind: "failure" | "replan" | "info" } | null;
   showDemoBar: boolean;
   leaderboardSort: string;
   replay3DActive: boolean;
@@ -44,6 +43,10 @@ interface SimStore {
   showHazards: boolean;
   showRoutes: boolean;
   showGhostRoutes: boolean;
+  showSurvivors: boolean;
+  aiScanPulses: Array<{ id: string; point: [number, number, number]; radius: number; label: string; createdAt: number }>;
+  aiDispatchBeams: Array<{ id: string; from: [number, number, number]; to: [number, number, number]; createdAt: number }>;
+  pruneAiEffects: () => void;
   enableFire: boolean;
   enableFlood: boolean;
   enableWind: boolean;
@@ -58,7 +61,7 @@ interface SimStore {
   selectDrone: (id: string | null) => void;
   selectTask: (id: string | null) => void;
   setCameraMode: (m: CameraMode) => void;
-  setCameraFocusPoint: (pt: [number, number, number] | null, transition?: "smooth" | "instant") => void;
+  setCameraFocusPoint: (pt: [number, number, number] | null) => void;
   setPlacementMode: (m: PlacementMode) => void;
   setPendingLocation: (pt: [number, number, number] | null) => void;
   setShowAddTargetModal: (v: boolean) => void;
@@ -69,14 +72,14 @@ interface SimStore {
   setShowShortcutsModal: (v: boolean) => void;
   setShowBriefingModal: (v: boolean) => void;
   setStageMode: (v: boolean) => void;
-  setCriticalAlert: (a: SimStore['criticalAlert']) => void;
+  setCriticalAlert: (a: SimStore["criticalAlert"]) => void;
   applyUiCommand: (action: string, payload: Record<string, unknown>) => void;
   setShowDemoBar: (v: boolean) => void;
   setLeaderboardSort: (s: string) => void;
-  startReplay3D: (runId: string, frames: SimStore['replay3DFrames']) => void;
+  startReplay3D: (runId: string, frames: SimStore["replay3DFrames"]) => void;
   setReplay3DIndex: (idx: number) => void;
   stopReplay3D: () => void;
-  toggleLayer: (key: "showRoads" | "showBuildings" | "showHazards" | "showRoutes" | "showGhostRoutes" | "enableFire" | "enableFlood" | "enableWind") => void;
+  toggleLayer: (key: "showRoads" | "showBuildings" | "showHazards" | "showRoutes" | "showGhostRoutes" | "showSurvivors" | "enableFire" | "enableFlood" | "enableWind") => void;
   setRightTab: (tab: SimStore["rightTab"]) => void;
   setEventFilter: (f: string) => void;
   setToast: (msg: string | null) => void;
@@ -97,7 +100,6 @@ export const useSimStore = create<SimStore>((set) => ({
   selectedTaskId: null,
   cameraMode: "orbit",
   cameraFocusPoint: null,
-  cameraTransition: "smooth",
 
   placementMode: "none",
   pendingLocation: null,
@@ -111,7 +113,7 @@ export const useSimStore = create<SimStore>((set) => ({
   stageMode: false,
   criticalAlert: null,
   showDemoBar: false,
-  leaderboardSort: 'score',
+  leaderboardSort: "score",
   replay3DActive: false,
   replay3DRunId: null,
   replay3DFrames: [],
@@ -122,6 +124,9 @@ export const useSimStore = create<SimStore>((set) => ({
   showHazards: true,
   showRoutes: true,
   showGhostRoutes: false,
+  showSurvivors: true,
+  aiScanPulses: [],
+  aiDispatchBeams: [],
   enableFire: true,
   enableFlood: true,
   enableWind: true,
@@ -147,8 +152,7 @@ export const useSimStore = create<SimStore>((set) => ({
     set((s) => ({ selectedDroneId, selectedTaskId: null, rightTab: selectedDroneId ? "drone" : s.rightTab })),
   selectTask: (selectedTaskId) => set({ selectedTaskId }),
   setCameraMode: (cameraMode) => set({ cameraMode }),
-  setCameraFocusPoint: (cameraFocusPoint, transition = "smooth") =>
-    set({ cameraFocusPoint, cameraTransition: transition }),
+  setCameraFocusPoint: (cameraFocusPoint) => set({ cameraFocusPoint }),
   setPlacementMode: (placementMode) => set({ placementMode, pendingLocation: null }),
   setPendingLocation: (pendingLocation) => set({ pendingLocation }),
   setShowAddTargetModal: (showAddTargetModal) => set({ showAddTargetModal }),
@@ -164,12 +168,7 @@ export const useSimStore = create<SimStore>((set) => ({
     set((s) => {
       if (action === "select_drone") return { selectedDroneId: (payload.id as string | null) ?? null, selectedTaskId: null };
       if (action === "select_task") return { selectedTaskId: (payload.id as string | null) ?? null };
-      if (action === "focus_point" || action.startsWith("camera.focus_")) {
-        const transition: "smooth" | "instant" =
-          payload.transition === "instant" ? "instant" : "smooth";
-        const pt = (payload.point as [number, number, number] | undefined) ?? null;
-        return { cameraFocusPoint: pt, cameraTransition: transition };
-      }
+      if (action === "focus_point") return { cameraFocusPoint: (payload.point as [number, number, number]) ?? null };
       if (action === "camera_mode") return { cameraMode: (payload.mode as CameraMode) || "orbit" };
       if (action === "placement_mode") return { placementMode: (payload.mode as PlacementMode) || "none", pendingLocation: null };
       if (action === "toggle_layer") {
@@ -190,6 +189,14 @@ export const useSimStore = create<SimStore>((set) => ({
       }
       if (action === "stop_replay") return { replay3DActive: false, replay3DRunId: null, replay3DFrames: [], replay3DIndex: 0 };
       if (action === "critical_alert") return { criticalAlert: (payload.alert as SimStore["criticalAlert"]) ?? null };
+      if (action === "ai_scan_pulse" && Array.isArray(payload.point)) {
+        const pulse = { id: `SCAN-${Date.now()}-${Math.random()}`, point: payload.point as [number, number, number], radius: Number(payload.radius || 320), label: String(payload.label || "AI SCAN"), createdAt: Date.now() };
+        return { aiScanPulses: [...s.aiScanPulses.slice(-5), pulse] };
+      }
+      if (action === "ai_dispatch_beam" && Array.isArray(payload.from) && Array.isArray(payload.to)) {
+        const beam = { id: `BEAM-${Date.now()}-${Math.random()}`, from: payload.from as [number, number, number], to: payload.to as [number, number, number], createdAt: Date.now() };
+        return { aiDispatchBeams: [...s.aiDispatchBeams.slice(-10), beam] };
+      }
       return {};
     }),
   setShowDemoBar: (showDemoBar) => set({ showDemoBar }),
@@ -201,4 +208,11 @@ export const useSimStore = create<SimStore>((set) => ({
   setRightTab: (rightTab) => set({ rightTab }),
   setEventFilter: (eventFilter) => set({ eventFilter }),
   setToast: (toast) => set({ toast }),
+  pruneAiEffects: () => set((s) => {
+    const now = Date.now();
+    return {
+      aiScanPulses: s.aiScanPulses.filter((p) => now - p.createdAt < 10000),
+      aiDispatchBeams: s.aiDispatchBeams.filter((b) => now - b.createdAt < 10000),
+    };
+  }),
 }));

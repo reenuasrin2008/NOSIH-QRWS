@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useMemo } from "react";
+import React, { useRef, useMemo } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 import { HazardZone, WeatherState } from "../types/simulation";
@@ -215,12 +215,6 @@ export const EnvironmentalEffects: React.FC<{ hazards: HazardZone[]; weather: We
   const fireTex = useMemo(() => createFireSpriteTexture(), []);
   const smokeTex = useMemo(() => createSmokeSpriteTexture(), []);
   const windRad = (weather.wind_direction_deg * Math.PI) / 180;
-
-  useEffect(() => () => {
-    floodTex.dispose();
-    fireTex.dispose();
-    smokeTex.dispose();
-  }, [floodTex, fireTex, smokeTex]);
 
   const rainPositions = useMemo(() => {
     const arr = new Float32Array(1400 * 3);

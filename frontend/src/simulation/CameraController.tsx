@@ -5,50 +5,23 @@ import * as THREE from "three";
 import { DroneState } from "../types/simulation";
 import { useSimStore } from "../state/simulationStore";
 
-/** Frame-rate-independent 3D vector damping powered by THREE.MathUtils.damp. */
-function damp3(
-  current: THREE.Vector3,
-  target: THREE.Vector3,
-  lambda: number,
-  delta: number
-): void {
-  if (
-    !Number.isFinite(target.x) ||
-    !Number.isFinite(target.y) ||
-    !Number.isFinite(target.z) ||
-    !Number.isFinite(delta)
-  ) {
-    return;
-  }
-  current.x = THREE.MathUtils.damp(current.x, target.x, lambda, delta);
-  current.y = THREE.MathUtils.damp(current.y, target.y, lambda, delta);
-  current.z = THREE.MathUtils.damp(current.z, target.z, lambda, delta);
-}
-
-export const CameraController: React.FC<{ drones: DroneState[]; worldSize: number }> = ({
-  drones,
-  worldSize,
-}) => {
+export const CameraController: React.FC<{ drones: DroneState[]; worldSize: number }> = ({ drones, worldSize }) => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const controlsRef = useRef<any>(null);
   const { camera } = useThree();
   const cameraMode = useSimStore((s) => s.cameraMode);
   const selectedDroneId = useSimStore((s) => s.selectedDroneId);
   const focusPoint = useSimStore((s) => s.cameraFocusPoint);
-  const cameraTransition = useSimStore((s) => s.cameraTransition);
   const setCameraFocusPoint = useSimStore((s) => s.setCameraFocusPoint);
+  const activeState = useSimStore((s) => s.activeState);
 
   const half = worldSize / 2;
   const glideGoalCam = useRef<THREE.Vector3 | null>(null);
   const glideGoalTarget = useRef<THREE.Vector3 | null>(null);
-  const instantSnapRef = useRef(false);
   const keys = useRef<Record<string, boolean>>({});
   const forwardVec = useRef(new THREE.Vector3());
   const rightVec = useRef(new THREE.Vector3());
   const moveVec = useRef(new THREE.Vector3());
-  const tmpCamVec = useRef(new THREE.Vector3());
-  const tmpTargetVec = useRef(new THREE.Vector3());
-  const tmpPanTarget = useRef(new THREE.Vector3());
 
   useEffect(() => {
     const onDown = (e: KeyboardEvent) => {
@@ -71,32 +44,42 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
     if (cameraMode === "topdown") {
       glideGoalCam.current = new THREE.Vector3(half, worldSize * 0.85, half + 20);
       glideGoalTarget.current = new THREE.Vector3(half, 0, half);
-      instantSnapRef.current = false;
     } else if (cameraMode === "orbit") {
       glideGoalCam.current = new THREE.Vector3(half * 0.28, worldSize * 0.24, worldSize * 0.88);
       glideGoalTarget.current = new THREE.Vector3(half, 30, half);
-      instantSnapRef.current = false;
+    } else if (cameraMode === "disaster_focus") {
+      const activeDisasters = (activeState?.disasters || []).filter((d) => d.status !== "RESOLVED");
+      const latest = activeDisasters[activeDisasters.length - 1];
+      if (latest) {
+        const { x, z } = latest.epicentre;
+        glideGoalTarget.current = new THREE.Vector3(x, 20, z);
+        glideGoalCam.current = new THREE.Vector3(x - 320, 290, z + 320);
+      }
     }
-  }, [cameraMode, half, worldSize]);
+  }, [cameraMode, half, worldSize, activeState?.disasters]);
 
   useEffect(() => {
     if (focusPoint) {
       glideGoalTarget.current = new THREE.Vector3(focusPoint[0], focusPoint[1], focusPoint[2]);
-      glideGoalCam.current = new THREE.Vector3(
-        focusPoint[0] - 260,
-        focusPoint[1] + 240,
-        focusPoint[2] + 260
-      );
-      instantSnapRef.current = cameraTransition === "instant";
+      glideGoalCam.current = new THREE.Vector3(focusPoint[0] - 260, focusPoint[1] + 240, focusPoint[2] + 260);
       setCameraFocusPoint(null);
     }
-  }, [focusPoint, cameraTransition, setCameraFocusPoint]);
+  }, [focusPoint, setCameraFocusPoint]);
 
-  useFrame((_, delta) => {
+  useFrame(({ clock }, delta) => {
     if (!controlsRef.current) return;
-    const dt = Math.min(delta, 0.05);
 
-    // WASD / Arrow camera-relative panning + Q/E altitude (Shift boosts 2.4x)
+    // Subtle damped camera tremor when an active earthquake is shaking the city
+    const activeQuake = (activeState?.disasters || []).find(
+      (d) => d.type === "earthquake" && (d.status === "ACTIVE" || d.status === "INTENSIFYING" || d.status === "PROPAGATING")
+    );
+    if (activeQuake && activeQuake.elapsed_time < 40) {
+      const t = clock.getElapsedTime();
+      const amp = activeQuake.severity * 1.4;
+      camera.position.x += Math.sin(t * 38) * amp;
+      camera.position.y += Math.cos(t * 44) * amp * 0.5;
+    }
+
     const k = keys.current;
     const fInput = (k["KeyW"] || k["ArrowUp"] ? 1 : 0) - (k["KeyS"] || k["ArrowDown"] ? 1 : 0);
     const rInput = (k["KeyD"] || k["ArrowRight"] ? 1 : 0) - (k["KeyA"] || k["ArrowLeft"] ? 1 : 0);
@@ -105,23 +88,13 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
     if (fInput !== 0 || rInput !== 0 || uInput !== 0) {
       glideGoalCam.current = null;
       glideGoalTarget.current = null;
-      instantSnapRef.current = false;
       const boost = k["ShiftLeft"] || k["ShiftRight"] ? 2.4 : 1.0;
-      const speed = Math.max(240, camera.position.y * 0.95) * boost * dt;
+      const speed = Math.max(240, camera.position.y * 0.95) * boost * delta;
 
       camera.getWorldDirection(forwardVec.current);
       forwardVec.current.y = 0;
-      if (forwardVec.current.lengthSq() > 1e-4) {
-        forwardVec.current.normalize();
-      } else {
-        forwardVec.current.set(0, 0, -1);
-      }
-      rightVec.current.crossVectors(forwardVec.current, camera.up);
-      if (rightVec.current.lengthSq() > 1e-4) {
-        rightVec.current.normalize();
-      } else {
-        rightVec.current.set(1, 0, 0);
-      }
+      if (forwardVec.current.lengthSq() > 1e-4) forwardVec.current.normalize();
+      rightVec.current.crossVectors(forwardVec.current, camera.up).normalize();
 
       moveVec.current.set(0, 0, 0);
       moveVec.current.addScaledVector(forwardVec.current, fInput * speed);
@@ -130,8 +103,7 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
 
       camera.position.add(moveVec.current);
       camera.position.y = Math.max(35, Math.min(worldSize * 1.15, camera.position.y));
-      tmpPanTarget.current.set(moveVec.current.x, 0, moveVec.current.z);
-      controlsRef.current.target.add(tmpPanTarget.current);
+      controlsRef.current.target.add(new THREE.Vector3(moveVec.current.x, 0, moveVec.current.z));
       controlsRef.current.update();
       return;
     }
@@ -141,14 +113,10 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
       if (d) {
         const fx = Math.sin(d.heading_rad);
         const fz = Math.cos(d.heading_rad);
-        tmpCamVec.current.set(d.position[0] + fx * 12, d.position[1] - 3.5, d.position[2] + fz * 12);
-        tmpTargetVec.current.set(
-          d.position[0] + fx * 180,
-          Math.max(0, d.position[1] - 42),
-          d.position[2] + fz * 180
-        );
-        damp3(camera.position, tmpCamVec.current, 8.5, dt);
-        damp3(controlsRef.current.target, tmpTargetVec.current, 8.5, dt);
+        const camPos = new THREE.Vector3(d.position[0] + fx * 12, d.position[1] - 3.5, d.position[2] + fz * 12);
+        const lookAt = new THREE.Vector3(d.position[0] + fx * 180, Math.max(0, d.position[1] - 42), d.position[2] + fz * 180);
+        camera.position.lerp(camPos, 1 - Math.exp(-8.5 * delta));
+        controlsRef.current.target.lerp(lookAt, 1 - Math.exp(-8.5 * delta));
         controlsRef.current.update();
       }
       return;
@@ -157,31 +125,23 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
     if (cameraMode === "follow" && selectedDroneId) {
       const d = drones.find((item) => item.id === selectedDroneId);
       if (d) {
-        tmpTargetVec.current.set(d.position[0], d.position[1], d.position[2]);
-        tmpCamVec.current.set(d.position[0] - 130, d.position[1] + 85, d.position[2] + 130);
-        damp3(camera.position, tmpCamVec.current, 4.5, dt);
-        damp3(controlsRef.current.target, tmpTargetVec.current, 6.5, dt);
+        const target = new THREE.Vector3(d.position[0], d.position[1], d.position[2]);
+        const desiredCam = new THREE.Vector3(d.position[0] - 130, d.position[1] + 85, d.position[2] + 130);
+        camera.position.lerp(desiredCam, 1 - Math.exp(-4.5 * delta));
+        controlsRef.current.target.lerp(target, 1 - Math.exp(-6.5 * delta));
         controlsRef.current.update();
       }
       return;
     }
 
     if (glideGoalCam.current && glideGoalTarget.current) {
-      if (instantSnapRef.current) {
-        camera.position.copy(glideGoalCam.current);
-        controlsRef.current.target.copy(glideGoalTarget.current);
-        controlsRef.current.update();
+      const alpha = 1 - Math.exp(-5.0 * delta);
+      camera.position.lerp(glideGoalCam.current, alpha);
+      controlsRef.current.target.lerp(glideGoalTarget.current, alpha);
+      controlsRef.current.update();
+      if (camera.position.distanceTo(glideGoalCam.current) < 4.0) {
         glideGoalCam.current = null;
         glideGoalTarget.current = null;
-        instantSnapRef.current = false;
-      } else {
-        damp3(camera.position, glideGoalCam.current, 5.0, dt);
-        damp3(controlsRef.current.target, glideGoalTarget.current, 5.0, dt);
-        controlsRef.current.update();
-        if (camera.position.distanceTo(glideGoalCam.current) < 4.0) {
-          glideGoalCam.current = null;
-          glideGoalTarget.current = null;
-        }
       }
     }
   });
@@ -199,7 +159,6 @@ export const CameraController: React.FC<{ drones: DroneState[]; worldSize: numbe
       onStart={() => {
         glideGoalCam.current = null;
         glideGoalTarget.current = null;
-        instantSnapRef.current = false;
       }}
     />
   );

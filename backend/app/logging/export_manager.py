@@ -1,6 +1,5 @@
 from __future__ import annotations
 import csv
-import html
 import io
 import json
 import time
@@ -106,7 +105,7 @@ def build_experiment_zip(world: SimulationWorld, leaderboard: Optional[List[Stra
 </head>
 <body>
   <h1>QUANTUM RESCUE — EXPERIMENT REPORT</h1>
-  <p>Run ID: <b>{html.escape(world.run_id)}</b> | Scenario: <b>{html.escape(world.city.scenario_name)}</b> | Seed: <b>{world.seed}</b> | Strategy: <b>{world.strategy.value.upper()}</b></p>
+  <p>Run ID: <b>{world.run_id}</b> | Scenario: <b>{world.city.scenario_name}</b> | Seed: <b>{world.seed}</b> | Strategy: <b>{world.strategy.value.upper()}</b></p>
   <div>
     <div class="kpi">COMPLETED: <b>{summary['metrics']['missions_completed']} / {len(world.tasks)}</b></div>
     <div class="kpi">ENERGY: <b>{summary['metrics']['total_energy_wh']} Wh</b></div>

@@ -7,22 +7,39 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from app.core.config import CONFIG, DEFAULT_SCENARIO_ID, DEFAULT_SCENARIO_NAME, DEFAULT_SEED
 from app.core.models import (
-    CityEnvironment, DroneState, DroneStatus, FailureType, HazardZone,
-    OptimizationResult, QuantumMetrics, RescueTask,
-    SimulationEvent, SimulationStatus, StrategyMetrics, StrategyType, TaskPriority, TaskStatus
+    BuildingDamageState, CityEnvironment, DisasterEvent, DisasterStatus, DisasterType,
+    DroneState, DroneStatus, FailureType, HazardZone,
+    OptimizationResult, QuantumMetrics, RescueTask, SimulatedSurvivor,
+    SimulationEvent, SimulationStatus, StrategyMetrics, StrategyType,
+    SurvivorStatus, TaskPriority, TaskStatus
 )
+from app.disasters.manager import DisasterLifecycleManager
+from app.disasters.survivor_generator import update_survivors_health
 from app.navigation.pathfinder import SpatialAirspaceGrid
+from app.optimization.classical_solver import solve_classical
 from app.optimization.feasibility import is_drone_eligible_for_task
+from app.optimization.greedy_solver import solve_greedy
+from app.optimization.hybrid_solver import solve_hybrid
+from app.optimization.quantum_solver import solve_quantum_qaoa
 from app.optimization.score_engine import compute_strategy_score
 from app.simulation.battery_model import compute_segment_energy_wh
 from app.simulation.city_generator import generate_city
 from app.simulation.charging_manager import ChargingPadManager
-from app.simulation.collision_manager import assign_corridor_altitude, resolve_airspace_conflicts
+from app.simulation.collision_manager import resolve_airspace_conflicts
 from app.recovery.failure_detector import scan_fleet_anomalies
-from app.recovery.fallback_manager import execute_with_failover
-from app.recovery.task_reallocator import release_incomplete_tasks
-from app.simulation.drone_manager import find_nearest_charging_station, generate_fleet
+from app.simulation.drone_manager import generate_fleet
+from app.simulation.serializers import (
+    deserialize_world as _deserialize_world,
+    serialize_city as _serialize_city,
+    serialize_disaster as _serialize_disaster,
+    serialize_drone as _serialize_drone,
+    serialize_event as _serialize_event,
+    serialize_experiment as _serialize_experiment,
+    serialize_task as _serialize_task,
+    serialize_world as _serialize_world,
+)
 from app.simulation.task_manager import generate_tasks
+from app.storage.event_journal import EventJournal
 
 
 class SimulationWorld:
@@ -35,15 +52,18 @@ class SimulationWorld:
         scenario_name: str = DEFAULT_SCENARIO_NAME,
         city_density: float = 1.0,
         building_density: float = 1.0,
+        journal: Optional[EventJournal] = None,
     ):
         self.run_id: str = run_id or f"RUN-{uuid.uuid4().hex[:6].upper()}"
         self.strategy: StrategyType = strategy
         self.seed: int = seed
         self.status: SimulationStatus = SimulationStatus.READY
+        self.state_version: int = 1
         self.sim_time_s: float = 0.0
         self.speed_multiplier: float = 1.0
         self.started_at_iso: str = datetime.now(timezone.utc).isoformat()
         self.wall_start_ts: float = time.perf_counter()
+        self.journal: Optional[EventJournal] = journal
 
         self.city: CityEnvironment = generate_city(
             seed=seed, scenario_id=scenario_id, scenario_name=scenario_name,
@@ -53,6 +73,8 @@ class SimulationWorld:
         self.charging: ChargingPadManager = ChargingPadManager(self.city)
         self.drones: Dict[str, DroneState] = generate_fleet(self.city, seed)
         self.tasks: Dict[str, RescueTask] = generate_tasks(self.city, seed, count=50)
+        self.disasters: DisasterLifecycleManager = DisasterLifecycleManager(seed=seed)
+        self.survivors: Dict[str, SimulatedSurvivor] = {}
 
         self.events: List[SimulationEvent] = []
         self.optimization_history: List[OptimizationResult] = []
@@ -77,15 +99,33 @@ class SimulationWorld:
         self.log_event("drone", "fleet_registered", f"{len(self.drones)} autonomous rescue drones registered across 4 classes.")
         self.log_event("task", "tasks_generated", f"{len(self.tasks)} rescue tasks generated (12 critical, 15 high, 15 medium, 8 low).")
 
+    def bump_version(self) -> int:
+        self.state_version += 1
+        return self.state_version
+
     def clone_for_strategy(self, strategy: StrategyType, run_id: str) -> "SimulationWorld":
-        cloned = copy.deepcopy(self)
+        saved_journal = self.journal
+        self.journal = None
+        try:
+            cloned = copy.deepcopy(self)
+        finally:
+            self.journal = saved_journal
         cloned.run_id = run_id
         cloned.strategy = strategy
         cloned.wall_start_ts = time.perf_counter()
+        cloned.journal = None
         cloned.log_event("system", "snapshot_cloned", f"Isolated benchmark instance created for strategy '{strategy.value.upper()}'.")
         return cloned
 
-    def log_event(self, category: str, event_type: str, message: str, entity_id: Optional[str] = None, payload: Optional[Dict[str, Any]] = None) -> SimulationEvent:
+    def log_event(
+        self,
+        category: str,
+        event_type: str,
+        message: str,
+        entity_id: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        operation_id: Optional[str] = None,
+    ) -> SimulationEvent:
         ev = SimulationEvent(
             id=f"EV-{uuid.uuid4().hex[:8].upper()}",
             run_id=self.run_id,
@@ -95,26 +135,407 @@ class SimulationWorld:
             event_type=event_type,
             message=message,
             entity_id=entity_id,
+            state_version=self.state_version,
+            operation_id=operation_id,
             payload=payload or {},
         )
         self.events.append(ev)
         if len(self.events) > 1500:
             self.events = self.events[-1500:]
+        if self.journal is not None:
+            try:
+                self.journal.record(category, ev.model_dump())
+            except Exception:
+                pass
         return ev
 
-    def run_optimizer(self, trigger_reason: str = "initial_plan") -> OptimizationResult:
-        prev_status = self.status
-        self.status = SimulationStatus.OPTIMIZING if trigger_reason == "initial_plan" else SimulationStatus.REPLANNING
-        self.log_event("solver", "optimizer_started", f"{self.strategy.value.upper()} optimizer started ({trigger_reason}).")
+    # ── Serialization Methods ─────────────────────────────────────────
+    def serialize_world(self) -> Dict[str, Any]:
+        return _serialize_world(self)
 
-        res = execute_with_failover(
-            self.strategy, self.drones, self.tasks, self.city, self.grid,
-            self.sim_time_s, seed=self.seed,
+    @classmethod
+    def deserialize_world(cls, snapshot: Dict[str, Any]) -> "SimulationWorld":
+        return _deserialize_world(snapshot, cls)
+
+    def serialize_city(self) -> Dict[str, Any]:
+        return _serialize_city(self)
+
+    def serialize_drone(self, drone_id: str) -> Optional[Dict[str, Any]]:
+        d = self.drones.get(drone_id)
+        return _serialize_drone(d) if d else None
+
+    def serialize_task(self, task_id: str) -> Optional[Dict[str, Any]]:
+        t = self.tasks.get(task_id)
+        return _serialize_task(t) if t else None
+
+    def serialize_disaster(self, event_id: str) -> Optional[Dict[str, Any]]:
+        ev = self.disasters.events.get(event_id)
+        return _serialize_disaster(ev) if ev else None
+
+    def serialize_event(self, ev: SimulationEvent) -> Dict[str, Any]:
+        return _serialize_event(ev)
+
+    def serialize_experiment(self, leaderboard: Optional[List[StrategyMetrics]] = None) -> Dict[str, Any]:
+        return _serialize_experiment(self, leaderboard)
+
+    # ── Disaster Lifecycle API ────────────────────────────────────────
+    def _revalidate_routes_for_region(self, x: float, z: float, radius: float) -> int:
+        self.grid.rebuild_region(x, z, radius)
+        rerouted = 0
+        for d in self.drones.values():
+            if d.status == DroneStatus.IN_FLIGHT and d.current_route and not self.grid.is_route_valid(d.current_route):
+                goal = d.current_route.waypoints[-1]
+                new_rt = self.grid.plan_route(
+                    start=d.position, goal=goal, drone=d,
+                    strategy=self.strategy.value, task_id=d.active_task_id, payload_kg=d.current_payload_kg,
+                )
+                new_rt.replan_count = d.current_route.replan_count + 1
+                d.current_route = new_rt
+                d.waypoint_index = 1
+                rerouted += 1
+                self.route_history.append(new_rt.model_dump())
+        if rerouted > 0:
+            self.replanning_count += 1
+            self.log_event("replanning", "hazard_reroute", f"Disaster hazard invalidated {rerouted} flight path(s); safe detours computed.")
+        return rerouted
+
+    def create_disaster(
+        self,
+        disaster_type: DisasterType,
+        x: float,
+        z: float,
+        *,
+        y: float = 0.0,
+        severity: float = 0.75,
+        affected_radius: float = 260.0,
+        duration: float = 900.0,
+        propagation_speed: float = 1.0,
+        start_delay: float = 0.0,
+        auto_start: bool = True,
+        seed: Optional[int] = None,
+        magnitude: float = 0.0,
+        operation_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        ver = self.bump_version()
+        ev, new_survivors = self.disasters.create_disaster(
+            self.city,
+            self.survivors,
+            disaster_type=disaster_type,
+            x=x,
+            z=z,
+            y=y,
+            severity=severity,
+            affected_radius=affected_radius,
+            duration=duration,
+            propagation_speed=propagation_speed,
+            start_delay=start_delay,
+            sim_time_s=self.sim_time_s,
+            auto_start=auto_start,
+            seed=seed,
+            magnitude=magnitude,
+            state_version=ver,
         )
-        self.feasible = res.feasible
-        if res.errors:
-            self.last_error = "; ".join(res.errors)
-            self.log_event("solver", "optimizer_error", f"{self.strategy.value.upper()} solver failover: {self.last_error}")
+        rerouted = 0
+        if ev.status == DisasterStatus.ACTIVE:
+            rerouted = self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event(
+            "disaster",
+            f"disaster_{ev.type.value}_created",
+            f"Disaster {ev.event_id} ({ev.type.value}) created at ({ev.epicentre.x:.0f}, {ev.epicentre.z:.0f}) with severity {ev.severity}. {len(new_survivors)} simulated survivor(s) identified in zone.",
+            entity_id=ev.event_id,
+            operation_id=operation_id,
+            payload={"event_id": ev.event_id, "type": ev.type.value, "severity": ev.severity, "survivors_generated": len(new_survivors)},
+        )
+        return {
+            "disaster": ev.model_dump(),
+            "new_survivors": [s.model_dump() for s in new_survivors],
+            "rerouted_drones": rerouted,
+            "state_version": self.state_version,
+            "run_id": self.run_id,
+            "simulation_time": self.sim_time_s,
+            "event_id": log.id,
+            "operation_id": operation_id,
+        }
+
+    def start_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev, new_survivors = self.disasters.start_disaster(self.city, self.survivors, event_id, self.sim_time_s)
+        ev.state_version = self.state_version
+        rerouted = self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_started", f"Disaster {event_id} started.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "new_survivors": [s.model_dump() for s in new_survivors], "rerouted_drones": rerouted, "state_version": self.state_version, "event_id": log.id}
+
+    def pause_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.pause_disaster(event_id, self.sim_time_s)
+        ev.state_version = self.state_version
+        log = self.log_event("disaster", "disaster_paused", f"Disaster {event_id} paused.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "state_version": self.state_version, "event_id": log.id}
+
+    def resume_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.resume_disaster(self.city, event_id, self.sim_time_s)
+        ev.state_version = self.state_version
+        log = self.log_event("disaster", "disaster_resumed", f"Disaster {event_id} resumed.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "state_version": self.state_version, "event_id": log.id}
+
+    def stop_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.stop_disaster(self.city, event_id, self.sim_time_s)
+        ev.state_version = self.state_version
+        self.grid.rebuild_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_stopped", f"Disaster {event_id} stopped and resolved.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "state_version": self.state_version, "event_id": log.id}
+
+    def remove_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        ev = self.disasters.events.get(event_id)
+        ok = self.disasters.remove_disaster(self.city, event_id, self.sim_time_s)
+        if not ok:
+            raise KeyError(f"Disaster {event_id} not found")
+        self.bump_version()
+        if ev:
+            self.grid.rebuild_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_removed", f"Disaster {event_id} removed.", entity_id=event_id, operation_id=operation_id)
+        return {"removed": True, "disaster_id": event_id, "state_version": self.state_version, "event_id": log.id}
+
+    def reset_disaster(self, event_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.reset_disaster(self.city, event_id, self.sim_time_s)
+        ev.state_version = self.state_version
+        self.grid.rebuild_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_reset", f"Disaster {event_id} reset.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "state_version": self.state_version, "event_id": log.id}
+
+    def adjust_disaster_severity(self, event_id: str, delta: float, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.adjust_severity(self.city, event_id, delta, self.sim_time_s)
+        ev.state_version = self.state_version
+        log = self.log_event("disaster", "disaster_severity_changed", f"Disaster {event_id} severity changed to {ev.severity}.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "state_version": self.state_version, "event_id": log.id}
+
+    def expand_disaster_radius(self, event_id: str, delta_radius: float, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.expand_radius(self.city, event_id, delta_radius, self.sim_time_s)
+        ev.state_version = self.state_version
+        rerouted = self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_radius_expanded", f"Disaster {event_id} radius expanded to {ev.affected_radius}m.", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "rerouted_drones": rerouted, "state_version": self.state_version, "event_id": log.id}
+
+    def move_disaster_epicentre(self, event_id: str, x: float, z: float, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        ev = self.disasters.move_epicentre(self.city, event_id, x, z, self.sim_time_s)
+        ev.state_version = self.state_version
+        rerouted = self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "disaster_moved", f"Disaster {event_id} moved to ({x:.0f}, {z:.0f}).", entity_id=event_id, operation_id=operation_id)
+        return {"disaster": ev.model_dump(), "rerouted_drones": rerouted, "state_version": self.state_version, "event_id": log.id}
+
+    def trigger_aftershock(self, event_id: str, scale: float = 0.65, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        self.bump_version()
+        res = self.disasters.trigger_aftershock(self.city, self.survivors, event_id, self.sim_time_s, scale=scale)
+        ev = res["event"]
+        ev.state_version = self.state_version
+        rerouted = self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "aftershock_triggered", f"Aftershock #{ev.aftershock_count} triggered on {event_id}.", entity_id=event_id, operation_id=operation_id)
+        return {
+            "disaster": ev.model_dump(),
+            "cascades": [c.model_dump() for c in res["cascades"]],
+            "rerouted_drones": rerouted,
+            "state_version": self.state_version,
+            "event_id": log.id,
+        }
+
+    def load_disaster_preset(self, preset_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        ver = self.bump_version()
+        events, surs = self.disasters.load_preset(self.city, self.survivors, preset_id, self.sim_time_s, state_version=ver)
+        rerouted = 0
+        for ev in events:
+            if ev.status == DisasterStatus.ACTIVE:
+                rerouted += self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "preset_loaded", f"Disaster preset '{preset_id}' activated ({len(events)} hazard(s), {len(surs)} simulated survivor(s)).", operation_id=operation_id)
+        return {
+            "preset_id": preset_id,
+            "disasters": [e.model_dump() for e in events],
+            "new_survivors": [s.model_dump() for s in surs],
+            "rerouted_drones": rerouted,
+            "state_version": self.state_version,
+            "event_id": log.id,
+        }
+
+    def create_random_disaster_scenario(self, seed: Optional[int] = None, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        ver = self.bump_version()
+        events, surs = self.disasters.create_random_scenario(self.city, self.survivors, self.sim_time_s, seed=seed, state_version=ver)
+        for ev in events:
+            if ev.status == DisasterStatus.ACTIVE:
+                self._revalidate_routes_for_region(ev.epicentre.x, ev.epicentre.z, ev.affected_radius)
+        log = self.log_event("disaster", "random_scenario_created", f"Random multi-hazard scenario triggered ({len(events)} event(s)).", operation_id=operation_id)
+        return {
+            "disasters": [e.model_dump() for e in events],
+            "new_survivors": [s.model_dump() for s in surs],
+            "state_version": self.state_version,
+            "event_id": log.id,
+        }
+
+    # ── Survivor Operations ───────────────────────────────────────────
+    def search_area_for_survivors(self, x: float, z: float, radius: float = 400.0) -> List[Dict[str, Any]]:
+        found: List[Dict[str, Any]] = []
+        changed = False
+        for s in self.survivors.values():
+            dist = math.hypot(s.position[0] - x, s.position[2] - z)
+            if dist <= radius:
+                if not s.detected:
+                    s.detected = True
+                    changed = True
+                if s.status == SurvivorStatus.UNCONFIRMED:
+                    s.status = SurvivorStatus.DETECTED
+                    changed = True
+                s.last_updated_sim_time = round(self.sim_time_s, 1)
+                found.append(s.model_dump())
+        if changed:
+            self.bump_version()
+            self.log_event("survivor", "area_search_completed", f"Thermal scan around ({x:.0f}, {z:.0f}, r={radius:.0f}m) detected {len(found)} simulated survivor(s).")
+        return found
+
+    def verify_survivor_location(self, survivor_id: str) -> Dict[str, Any]:
+        s = self.survivors.get(survivor_id)
+        if not s:
+            raise KeyError(f"Survivor {survivor_id} not found")
+        s.detected = True
+        if s.status in (SurvivorStatus.UNCONFIRMED, SurvivorStatus.DETECTED):
+            s.status = SurvivorStatus.LOCATED
+        s.last_updated_sim_time = round(self.sim_time_s, 1)
+        self.bump_version()
+        self.log_event("survivor", "survivor_verified", f"Simulated survivor {survivor_id} location verified at {s.position}.", entity_id=survivor_id)
+        return s.model_dump()
+
+    def prioritize_survivors(self) -> List[Dict[str, Any]]:
+        order = {TaskPriority.CRITICAL: 0, TaskPriority.HIGH: 1, TaskPriority.MEDIUM: 2, TaskPriority.LOW: 3}
+        ranked = sorted(
+            self.survivors.values(),
+            key=lambda s: (
+                s.status in (SurvivorStatus.EVACUATED, SurvivorStatus.MEDICAL_ASSISTANCE),
+                order.get(s.priority, 4),
+                s.health_level,
+                -s.exposure_level,
+            ),
+        )
+        return [s.model_dump() for s in ranked]
+
+    # ── Explicit Drone & Route Operations ─────────────────────────────
+    def assign_drone_to_task(self, drone_id: str, task_id: str, operation_id: Optional[str] = None) -> Dict[str, Any]:
+        drone = self.drones.get(drone_id)
+        if not drone:
+            return {"ok": False, "error": f"Drone {drone_id} not found.", "state_version": self.state_version}
+        task = self.tasks.get(task_id)
+        if not task:
+            return {"ok": False, "error": f"Task {task_id} not found.", "state_version": self.state_version}
+        if task.status == TaskStatus.COMPLETED:
+            return {"ok": False, "error": f"Task {task_id} is already completed.", "state_version": self.state_version}
+        ok, reason, route = is_drone_eligible_for_task(drone, task, self.city, self.grid, strategy=self.strategy.value)
+        if not ok or route is None:
+            return {"ok": False, "error": reason, "drone_id": drone_id, "task_id": task_id, "route_feasible": False, "state_version": self.state_version}
+
+        if task.assigned_drone_id and task.assigned_drone_id != drone_id:
+            prev = self.drones.get(task.assigned_drone_id)
+            if prev and task_id in prev.assigned_task_ids:
+                prev.assigned_task_ids.remove(task_id)
+
+        self.bump_version()
+        task.assigned_drone_id = drone_id
+        task.status = TaskStatus.ASSIGNED
+        task.assigned_at_sim_s = self.sim_time_s
+        task.unassigned_reason = None
+        if task_id not in drone.assigned_task_ids:
+            drone.assigned_task_ids.insert(0, task_id)
+        if task.survivor_id and task.survivor_id in self.survivors:
+            self.survivors[task.survivor_id].assigned_task_id = task_id
+            self.survivors[task.survivor_id].status = SurvivorStatus.RESCUE_PENDING
+        if drone.status == DroneStatus.AVAILABLE:
+            self._dispatch_next_task(drone)
+        self.log_event("drone", "drone_assigned_to_task", f"Drone {drone_id} assigned to {task_id} ({route.distance_m:.0f}m, {route.estimated_energy_wh:.1f}Wh).", entity_id=drone_id, operation_id=operation_id)
+        return {
+            "ok": True,
+            "drone_id": drone_id,
+            "task_id": task_id,
+            "assignment_status": task.status.value.upper(),
+            "route_feasible": True,
+            "distance_m": route.distance_m,
+            "estimated_energy_wh": route.estimated_energy_wh,
+            "battery_percent": drone.battery_percent,
+            "state_version": self.state_version,
+        }
+
+    def find_best_drone_for_task(self, task_id: str) -> Dict[str, Any]:
+        task = self.tasks.get(task_id)
+        if not task:
+            return {"ok": False, "error": f"Task {task_id} not found."}
+        candidates: List[Dict[str, Any]] = []
+        for d in self.drones.values():
+            ok, reason, route = is_drone_eligible_for_task(d, task, self.city, self.grid, strategy=self.strategy.value)
+            if ok and route is not None:
+                score = route.distance_m + route.risk_score * 400.0 + len(d.assigned_task_ids) * 250.0 - d.battery_percent * 2.0
+                candidates.append({
+                    "drone_id": d.id,
+                    "drone_type": d.drone_type,
+                    "status": d.status.value,
+                    "battery_percent": d.battery_percent,
+                    "distance_m": route.distance_m,
+                    "estimated_duration_s": route.estimated_duration_s,
+                    "estimated_energy_wh": route.estimated_energy_wh,
+                    "risk_score": route.risk_score,
+                    "suitability_cost": round(score, 2),
+                })
+        candidates.sort(key=lambda c: c["suitability_cost"])
+        return {
+            "ok": True,
+            "task_id": task_id,
+            "best_drone": candidates[0] if candidates else None,
+            "candidates": candidates[:5],
+        }
+
+    def calculate_safe_route(self, drone_id: str, destination: Tuple[float, float, float]) -> Dict[str, Any]:
+        drone = self.drones.get(drone_id)
+        if not drone:
+            return {"ok": False, "error": f"Drone {drone_id} not found."}
+        route = self.grid.plan_route(
+            start=drone.position,
+            goal=(destination[0], max(6.0, destination[1]), destination[2]),
+            drone=drone,
+            strategy=self.strategy.value,
+            payload_kg=drone.current_payload_kg,
+        )
+        st = self.charging.select_available_station(drone, self.city)
+        rtb_pos = st.position if st else drone.home_position
+        rtb_e = compute_segment_energy_wh(destination, rtb_pos, drone, 0.0, self.city.weather, 5.0)
+        battery_ok = (drone.remaining_battery_wh - (route.estimated_energy_wh + rtb_e)) >= drone.battery_capacity_wh * CONFIG.safety_reserve_ratio
+        return {
+            "ok": True,
+            "route": route.model_dump(),
+            "rtb_energy_wh": round(rtb_e, 2),
+            "battery_reserve_ok": battery_ok,
+            "overall_feasible": bool(route.feasible and battery_ok),
+        }
+
+    def run_optimizer(self, trigger_reason: str = "initial_plan", strategy_override: Optional[StrategyType] = None) -> OptimizationResult:
+        prev_status = self.status
+        active_strategy = strategy_override or self.strategy
+        self.status = SimulationStatus.OPTIMIZING if trigger_reason == "initial_plan" else SimulationStatus.REPLANNING
+        self.log_event("solver", "optimizer_started", f"{active_strategy.value.upper()} optimizer started ({trigger_reason}).")
+
+        try:
+            if active_strategy == StrategyType.GREEDY:
+                res = solve_greedy(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
+            elif active_strategy == StrategyType.CLASSICAL:
+                res = solve_classical(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
+            elif active_strategy == StrategyType.QUANTUM:
+                res = solve_quantum_qaoa(self.drones, self.tasks, self.city, self.grid, self.sim_time_s, seed=self.seed)
+            else:
+                res = solve_hybrid(self.drones, self.tasks, self.city, self.grid, self.sim_time_s, seed=self.seed)
+        except Exception as exc:
+            self.last_error = str(exc)
+            self.log_event("solver", "optimizer_error", f"{active_strategy.value.upper()} failed ({exc}); engaging feasibility-checked greedy fallback.")
+            res = solve_greedy(self.drones, self.tasks, self.city, self.grid, self.sim_time_s)
+            res.fallback_used = f"Greedy failover after error: {exc}"
+            res.errors.append(str(exc))
 
         self.optimization_history.append(res)
         self.last_solver_runtime_ms = res.solver_runtime_ms
@@ -151,7 +572,7 @@ class SimulationWorld:
                             "sim_time_s": round(self.sim_time_s, 1),
                             "task_id": tid,
                             "new_drone_id": did,
-                            "strategy": self.strategy.value,
+                            "strategy": active_strategy.value,
                             "reason": trigger_reason,
                         })
                     if drone.status == DroneStatus.AVAILABLE:
@@ -162,7 +583,8 @@ class SimulationWorld:
                 task.status = TaskStatus.UNASSIGNED
                 task.unassigned_reason = "No eligible drone met capability, payload, and 20% battery reserve constraints."
 
-        self.log_event("solver", "optimizer_completed", f"{self.strategy.value.upper()} completed in {res.solver_runtime_ms:.1f}ms ({newly_assigned} assignments, obj={res.objective_value:.1f}).")
+        self.bump_version()
+        self.log_event("solver", "optimizer_completed", f"{active_strategy.value.upper()} completed in {res.solver_runtime_ms:.1f}ms ({newly_assigned} assignments, obj={res.objective_value:.1f}).")
         self.status = SimulationStatus.RUNNING if prev_status in (SimulationStatus.RUNNING, SimulationStatus.READY, SimulationStatus.OPTIMIZING, SimulationStatus.REPLANNING) else prev_status
         return res
 
@@ -175,16 +597,13 @@ class SimulationWorld:
             if not task or task.status == TaskStatus.COMPLETED:
                 drone.assigned_task_ids.pop(0)
                 continue
-            ok, reason, route = is_drone_eligible_for_task(
-                drone, task, self.city, self.grid, strategy=self.strategy.value, tasks=self.tasks,
-            )
-            if not ok or route is None or not self.grid.is_route_valid(route):
+            ok, reason, route = is_drone_eligible_for_task(drone, task, self.city, self.grid, strategy=self.strategy.value)
+            if not ok or route is None:
                 drone.assigned_task_ids.pop(0)
                 task.assigned_drone_id = None
                 task.status = TaskStatus.REQUIRES_REASSIGNMENT
                 task.unassigned_reason = reason
                 if "Battery reserve" in reason:
-                    self._release_drone_tasks(drone, reason="SEQUENCED_BATTERY_RESERVE")
                     self._send_drone_to_charge(drone)
                     return
                 continue
@@ -196,6 +615,9 @@ class SimulationWorld:
             drone.status = DroneStatus.IN_FLIGHT
             task.status = TaskStatus.IN_PROGRESS
             task.started_at_sim_s = self.sim_time_s
+            if task.survivor_id and task.survivor_id in self.survivors:
+                self.survivors[task.survivor_id].status = SurvivorStatus.RESCUE_IN_PROGRESS
+                self.survivors[task.survivor_id].assigned_task_id = tid
             self.route_history.append(route.model_dump())
             self.log_event("drone", "task_dispatched", f"Drone {drone.id} dispatched to {task.id} ({task.priority.value}, {route.distance_m:.0f}m).", entity_id=drone.id)
             return
@@ -208,88 +630,23 @@ class SimulationWorld:
             drone.current_route = None
             drone.active_task_id = None
 
-    def _send_drone_to_charge(self, drone: DroneState, rtb_only: bool = False) -> bool:
-        if drone.active_task_id:
-            self._release_drone_tasks(drone, reason="MANUAL_OR_SAFETY_RTB")
-        selected_route = None
-
-        def route_to(station):
-            nonlocal selected_route
-            target = (
-                station.position[0],
-                self.grid.safe_surface_altitude(station.position[0], station.position[2], station.position[1]),
-                station.position[2],
-            )
-            candidate = self.grid.plan_route(
-                start=drone.position, goal=target, drone=drone,
-                strategy=self.strategy.value, task_id=None, payload_kg=0.0,
-            )
-            if not candidate.feasible or not self.grid.is_route_valid(candidate):
-                return False
-            selected_route = candidate
-            return True
-
-        st = self.charging.reserve_station(drone, self.city, route_check=route_to)
-        if st is None:
-            # No open pad: divert to the nearest station with a validated route
-            # and join its atomic waiting queue.
-            active = sorted(
-                (s for s in self.city.stations if s.active),
-                key=lambda s: math.hypot(drone.position[0] - s.position[0], drone.position[2] - s.position[2]),
-            )
-            for candidate_st in active:
-                if route_to(candidate_st):
-                    self.charging.request_pad(drone.id, candidate_st)
-                    st = candidate_st
-                    break
-        if st is None or selected_route is None:
-            target = (
-                drone.home_position[0],
-                self.grid.safe_surface_altitude(drone.home_position[0], drone.home_position[2], drone.home_position[1]),
-                drone.home_position[2],
-            )
-            selected_route = self.grid.plan_route(
-                start=drone.position, goal=target, drone=drone,
-                strategy=self.strategy.value, task_id=None, payload_kg=0.0,
-            )
-            if not selected_route.feasible or not self.grid.is_route_valid(selected_route):
-                drone.current_route = None
-                drone.status = DroneStatus.LOW_BATTERY
-                drone.groundspeed_mps = 0.0
-                self.log_event("drone", "rtb_route_rejected", f"Drone {drone.id} has no validated safe charging/return route.", entity_id=drone.id)
-                return False
-
-        drone.current_route = selected_route
+    def _send_drone_to_charge(self, drone: DroneState, rtb_only: bool = False) -> None:
+        st = self.charging.select_available_station(drone, self.city)
+        target = st.position if st else drone.home_position
+        route = self.grid.plan_route(
+            start=drone.position, goal=(target[0], 2.0, target[2]),
+            drone=drone, strategy=self.strategy.value, task_id=None, payload_kg=0.0,
+        )
+        drone.current_route = route
         drone.waypoint_index = 1
         drone.active_task_id = None
         drone.current_payload_kg = 0.0
         drone.status = DroneStatus.RETURNING
-        drone.groundspeed_mps = 0.0
-        queued = not self.charging.has_reservation(drone.id)
         if not rtb_only:
-            self.log_event(
-                "drone", "low_battery_rtb",
-                f"Drone {drone.id} battery at {drone.battery_percent:.1f}% — returning to {st.name if st else 'home'}"
-                + (" (waiting queue)." if queued else "."),
-                entity_id=drone.id,
-            )
-        return True
-
-    def _try_begin_charging(self, drone: DroneState) -> bool:
-        if not self.charging.has_reservation(drone.id):
-            return False
-        drone.status = DroneStatus.CHARGING
-        drone.current_route = None
-        drone.waypoint_index = 0
-        drone.groundspeed_mps = 0.0
-        drone.velocity = (0.0, 0.0, 0.0)
-        drone.eta_seconds = 0.0
-        return True
+            self.log_event("drone", "low_battery_rtb", f"Drone {drone.id} battery at {drone.battery_percent:.1f}% — returning to {st.name if st else 'home'}.", entity_id=drone.id)
 
     def step(self, dt: float = CONFIG.tick_dt) -> None:
         if self.status not in (SimulationStatus.RUNNING, SimulationStatus.READY):
-            return
-        if not math.isfinite(dt) or dt <= 0.0 or not math.isfinite(self.speed_multiplier) or self.speed_multiplier <= 0.0:
             return
         if self.status == SimulationStatus.READY:
             self.status = SimulationStatus.RUNNING
@@ -297,6 +654,14 @@ class SimulationWorld:
             self.run_optimizer("initial_plan")
 
         self.sim_time_s = round(self.sim_time_s + dt, 2)
+
+        # Advance dynamic disasters & survivor health
+        if self.disasters.events:
+            d_step = self.disasters.step(self.city, self.survivors, dt, self.sim_time_s)
+            for rx, rz, rr in d_step.get("changed_regions", []):
+                self._revalidate_routes_for_region(rx, rz, rr)
+        if self.survivors:
+            update_survivors_health(self.survivors, dt, self.sim_time_s)
 
         for drone in self.drones.values():
             drone.last_telemetry_ts = self.sim_time_s
@@ -332,6 +697,15 @@ class SimulationWorld:
                         drone.tasks_completed += 1
                         if tid in drone.assigned_task_ids:
                             drone.assigned_task_ids.remove(tid)
+                        if task.survivor_id and task.survivor_id in self.survivors:
+                            surv = self.survivors[task.survivor_id]
+                            surv.status = (
+                                SurvivorStatus.MEDICAL_ASSISTANCE
+                                if task.task_type == "medical_delivery"
+                                else SurvivorStatus.EVACUATED
+                            )
+                            surv.detected = True
+                            surv.last_updated_sim_time = round(self.sim_time_s, 1)
                         self.log_event("task", "task_completed", f"Task {task.id} completed by {drone.id} at t={self.sim_time_s:.0f}s.", entity_id=task.id)
                     drone.active_task_id = None
                     drone.current_payload_kg = 0.0
@@ -348,7 +722,7 @@ class SimulationWorld:
             if drone.status == DroneStatus.AVAILABLE and drone.assigned_task_ids:
                 self._dispatch_next_task(drone)
 
-        conflicts = resolve_airspace_conflicts(self.drones, self.grid)
+        conflicts = resolve_airspace_conflicts(self.drones)
         if conflicts:
             self.airspace_conflicts_total += len(conflicts)
 
@@ -356,12 +730,18 @@ class SimulationWorld:
             if task.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED) and self.sim_time_s > task.deadline_seconds:
                 task.deadline_violated = True
 
+        self.bump_version()
+
         if int(self.sim_time_s) % 5 == 0:
             self._record_snapshot()
 
         all_done = all(t.status in (TaskStatus.COMPLETED, TaskStatus.FAILED) for t in self.tasks.values())
         no_active_flight = all(d.status not in (DroneStatus.IN_FLIGHT, DroneStatus.DELIVERING, DroneStatus.TAKING_OFF) for d in self.drones.values())
-        if all_done and no_active_flight:
+        no_active_disasters = all(
+            ev.status in (DisasterStatus.RESOLVED, DisasterStatus.CONTAINED, DisasterStatus.PAUSED)
+            for ev in self.disasters.events.values()
+        )
+        if all_done and no_active_flight and no_active_disasters:
             self.status = SimulationStatus.COMPLETED
             self._record_snapshot()
             self.log_event("system", "simulation_completed", f"All rescue tasks resolved at t={self.sim_time_s:.0f}s.")
@@ -373,9 +753,8 @@ class SimulationWorld:
             drone.pitch_rad = 0.0
             drone.bank_rad = 0.0
             if drone.status == DroneStatus.RETURNING:
-                if not self._try_begin_charging(drone):
-                    drone.eta_seconds = 0.0
-                    # Remain safely on station approach until a queued pad is promoted.
+                drone.status = DroneStatus.CHARGING
+                drone.current_route = None
             elif drone.active_task_id and drone.active_task_id in self.tasks:
                 drone.status = DroneStatus.DELIVERING
                 drone.service_timer_s = self.tasks[drone.active_task_id].service_time_seconds
@@ -389,7 +768,6 @@ class SimulationWorld:
         dist = math.sqrt(dx * dx + dy * dy + dz * dz)
         horiz_dist = math.hypot(dx, dz)
 
-        # Wind-coupled effective cruise speed (headwind slows groundspeed, tailwind boosts)
         wind_effect = 0.0
         if horiz_dist > 0.2:
             wind_rad = math.radians(self.city.weather.wind_direction_deg)
@@ -397,11 +775,9 @@ class SimulationWorld:
             wind_effect = dot * self.city.weather.wind_speed_mps * 0.22
 
         target_speed = max(3.5, min(drone.max_speed_mps, drone.cruise_speed_mps + wind_effect))
-        # Smooth deceleration when approaching final waypoint
         if drone.waypoint_index == len(route.waypoints) - 1 and dist < 24.0:
             target_speed = max(2.8, target_speed * (dist / 24.0))
 
-        # Smooth acceleration/deceleration ramp (4.5 m/s^2)
         max_dv = 4.5 * dt
         if drone.groundspeed_mps < target_speed:
             drone.groundspeed_mps = round(min(target_speed, drone.groundspeed_mps + max_dv), 2)
@@ -429,7 +805,6 @@ class SimulationWorld:
         drone.position = new_pos
         drone.total_distance_m = round(drone.total_distance_m + seg_dist, 2)
 
-        # Compute remaining ETA along waypoints
         rem_dist = dist
         for wi in range(drone.waypoint_index, len(route.waypoints) - 1):
             a, b = route.waypoints[wi], route.waypoints[wi + 1]
@@ -443,9 +818,8 @@ class SimulationWorld:
             drone.pitch_rad = 0.0
             drone.eta_seconds = 0.0
             if drone.status == DroneStatus.RETURNING:
-                if not self._try_begin_charging(drone):
-                    drone.eta_seconds = 0.0
-                    # Remain safely on station approach until a queued pad is promoted.
+                drone.status = DroneStatus.CHARGING
+                drone.current_route = None
             elif drone.active_task_id and drone.active_task_id in self.tasks:
                 drone.status = DroneStatus.DELIVERING
                 drone.service_timer_s = self.tasks[drone.active_task_id].service_time_seconds
@@ -459,7 +833,6 @@ class SimulationWorld:
         drone.total_flight_time_s = round(drone.total_flight_time_s + dt, 1)
         drone.battery_percent = round((drone.remaining_battery_wh / drone.battery_capacity_wh) * 100.0, 1)
 
-        # Instantaneous power draw (Watts = Wh * 3600 / dt) & battery thermal response
         power_w = (energy_wh * 3600.0) / max(dt, 0.1)
         drone.power_draw_w = round(power_w, 1)
         ambient_c = 28.0
@@ -469,11 +842,10 @@ class SimulationWorld:
         burn_rate = max(0.05, energy_wh / max(dt, 0.1))
         drone.estimated_remaining_flight_s = round(drone.remaining_battery_wh / burn_rate, 1)
 
-        if drone.battery_percent <= 19.0 and drone.status in (DroneStatus.IN_FLIGHT, DroneStatus.RETURNING):
-            released = self._release_drone_tasks(drone, reason="LOW_BATTERY_RESERVE")
+        if drone.battery_percent <= 19.0 and drone.status == DroneStatus.IN_FLIGHT:
+            self._release_drone_tasks(drone, reason="LOW_BATTERY_RESERVE")
             self._send_drone_to_charge(drone)
-            if released:
-                self.run_optimizer("low_battery_recovery")
+            self.run_optimizer("low_battery_recovery")
 
     def _release_drone_tasks(self, drone: DroneState, reason: str) -> List[str]:
         released: List[str] = []
@@ -498,6 +870,7 @@ class SimulationWorld:
         priority: TaskPriority, payload_required_kg: float, required_capabilities: List[str],
         deadline_seconds: float, service_time_seconds: float, risk_level: float,
         description: str = "", assign_drone_id: Optional[str] = None, auto_assign: bool = True,
+        survivor_id: Optional[str] = None, disaster_event_id: Optional[str] = None,
     ) -> RescueTask:
         tid = f"T-{len(self.tasks) + 1:03d}"
         task = RescueTask(
@@ -507,16 +880,20 @@ class SimulationWorld:
             payload_required_kg=payload_required_kg, required_capabilities=required_capabilities,
             service_time_seconds=service_time_seconds, risk_level=risk_level, description=description,
             status=TaskStatus.PENDING, created_at_sim_s=self.sim_time_s,
+            survivor_id=survivor_id, disaster_event_id=disaster_event_id,
         )
         self.tasks[tid] = task
+        if survivor_id and survivor_id in self.survivors:
+            self.survivors[survivor_id].assigned_task_id = tid
+            self.survivors[survivor_id].status = SurvivorStatus.RESCUE_PENDING
+        if disaster_event_id and disaster_event_id in self.disasters.events:
+            self.disasters.events[disaster_event_id].related_tasks.append(tid)
+        self.bump_version()
         self.log_event("task", "target_injected", f"New rescue task {tid} ({priority.value} {task_type}) injected at ({location[0]:.0f}, {location[2]:.0f}).", entity_id=tid)
 
         if assign_drone_id and assign_drone_id in self.drones:
             d = self.drones[assign_drone_id]
-            ok, reason, _ = is_drone_eligible_for_task(
-                d, task, self.city, self.grid, strategy=self.strategy.value,
-                assigned_task_ids=list(d.assigned_task_ids) + [task.id], tasks=self.tasks,
-            )
+            ok, reason, _ = is_drone_eligible_for_task(d, task, self.city, self.grid, strategy=self.strategy.value)
             if ok:
                 task.assigned_drone_id = d.id
                 task.status = TaskStatus.ASSIGNED
@@ -540,40 +917,27 @@ class SimulationWorld:
             return {"ok": False, "error": f"Drone {drone_id} not found."}
         if drone.status in (DroneStatus.DESTROYED, DroneStatus.DAMAGED, DroneStatus.COMMUNICATION_LOST):
             return {"ok": False, "error": f"Drone {drone_id} is {drone.status.value} and cannot accept waypoints."}
-        if drone.active_task_id or drone.status in (DroneStatus.DELIVERING, DroneStatus.RETURNING, DroneStatus.CHARGING):
-            return {"ok": False, "error": "Drone has an active delivery or charging return; cancel/release it before setting a custom waypoint."}
-        if not self.grid.is_valid_point(destination):
-            return {"ok": False, "error": "Destination must contain three finite coordinates."}
 
         route = self.grid.plan_route(
-            start=drone.position, goal=destination,
+            start=drone.position, goal=(destination[0], max(6.0, destination[1]), destination[2]),
             drone=drone, strategy=self.strategy.value, payload_kg=drone.current_payload_kg,
         )
-        if not route.feasible or not self.grid.is_route_valid(route):
-            return {"ok": False, "error": "Destination or route is blocked, unsafe, or outside the operating envelope.", "route": route.model_dump()}
+        if not route.feasible:
+            return {"ok": False, "error": "Destination is blocked by hazards or no-fly zones.", "route": route.model_dump()}
 
         st = self.charging.select_available_station(drone, self.city)
-        rtb_target = st.position if st else drone.home_position
-        rtb_goal = (
-            rtb_target[0],
-            self.grid.safe_surface_altitude(rtb_target[0], rtb_target[2], rtb_target[1]),
-            rtb_target[2],
-        )
-        rtb_route = self.grid.plan_route(
-            start=route.waypoints[-1], goal=rtb_goal, drone=drone,
-            strategy=self.strategy.value, payload_kg=0.0,
-        )
-        if not rtb_route.feasible or not self.grid.is_route_valid(rtb_route):
-            return {"ok": False, "error": "No validated safe return route from destination.", "route": route.model_dump()}
-        if drone.remaining_battery_wh - (route.estimated_energy_wh + rtb_route.estimated_energy_wh) < drone.battery_capacity_wh * CONFIG.safety_reserve_ratio:
+        rtb_pos = st.position if st else drone.home_position
+        rtb_e = compute_segment_energy_wh(destination, rtb_pos, drone, 0.0, self.city.weather, 5.0)
+        if drone.remaining_battery_wh - (route.estimated_energy_wh + rtb_e) < drone.battery_capacity_wh * CONFIG.safety_reserve_ratio:
             return {"ok": False, "error": "Route violates 20% mandatory battery safety reserve.", "route": route.model_dump()}
 
         drone.current_route = route
         drone.waypoint_index = 1
         drone.status = DroneStatus.IN_FLIGHT
         self.route_history.append(route.model_dump())
+        self.bump_version()
         self.log_event("drone", "custom_waypoint_set", f"Drone {drone.id} redirected to ({destination[0]:.0f}, {destination[2]:.0f}), dist={route.distance_m:.0f}m.", entity_id=drone.id)
-        return {"ok": True, "route": route.model_dump()}
+        return {"ok": True, "route": route.model_dump(), "state_version": self.state_version}
 
     def inject_failure(self, drone_id: str, failure_type: FailureType) -> Dict[str, Any]:
         drone = self.drones.get(drone_id)
@@ -581,7 +945,6 @@ class SimulationWorld:
             return {"ok": False, "error": f"Drone {drone_id} not found."}
 
         t0 = time.perf_counter()
-        self.charging.release_all(drone.id)
         released = self._release_drone_tasks(drone, reason=failure_type.value)
 
         if failure_type == FailureType.COMPLETE_DRONE_DESTRUCTION:
@@ -609,6 +972,7 @@ class SimulationWorld:
             "strategy": self.strategy.value,
         }
         drone.failure_history.append(failure_record)
+        self.bump_version()
         self.log_event("failure", "drone_failed", f"Drone {drone.id} suffered {failure_type.value} at ({drone.position[0]:.0f}, {drone.position[2]:.0f}). {len(released)} task(s) queued for recovery.", entity_id=drone.id, payload=failure_record)
 
         reassigned = []
@@ -628,7 +992,7 @@ class SimulationWorld:
 
         if released:
             self.log_event("replanning", "task_recovery_complete", f"Recovery complete in {rec_ms:.1f}ms: {len(reassigned)}/{len(released)} tasks reassigned.", entity_id=drone.id, payload={"reassigned": reassigned})
-        return {"ok": True, "failure": failure_record}
+        return {"ok": True, "failure": failure_record, "state_version": self.state_version}
 
     def inject_environment_event(self, event_kind: str, params: Dict[str, Any]) -> Dict[str, Any]:
         replan_needed = False
@@ -675,37 +1039,35 @@ class SimulationWorld:
                 msg = f"Landing/charging station {active_st[-1].name} disabled."
                 replan_needed = True
 
+        self.bump_version()
         self.log_event("environment", event_kind, msg or f"Environment event '{event_kind}' applied.")
 
         rerouted = 0
         if replan_needed:
-            if event_kind in ('expand_fire', 'new_fire', 'new_flood', 'close_airspace') and self.city.hazards:
-                hz_ref = self.city.hazards[-1] if event_kind != 'expand_fire' else next((h for h in self.city.hazards if h.kind == 'fire' and h.active), self.city.hazards[-1])
-                self.grid.rebuild_region(hz_ref.x, hz_ref.z, hz_ref.radius)
+            if event_kind in ("expand_fire", "new_fire", "new_flood", "close_airspace") and self.city.hazards:
+                hz_ref = self.city.hazards[-1] if event_kind != "expand_fire" else next((h for h in self.city.hazards if h.kind == "fire" and h.active), self.city.hazards[-1])
+                rerouted = self._revalidate_routes_for_region(hz_ref.x, hz_ref.z, hz_ref.radius)
             else:
                 self.grid.rebuild()
-            for d in self.drones.values():
-                if d.status in (DroneStatus.IN_FLIGHT, DroneStatus.RETURNING, DroneStatus.TAKING_OFF) and d.current_route and not self.grid.is_route_valid(d.current_route):
-                    goal = d.current_route.waypoints[-1]
-                    new_rt = self.grid.plan_route(start=d.position, goal=goal, drone=d, strategy=self.strategy.value, task_id=d.active_task_id, payload_kg=d.current_payload_kg)
-                    if new_rt.feasible and self.grid.is_route_valid(new_rt):
-                        new_rt.replan_count = d.current_route.replan_count + 1
-                        d.current_route = new_rt
-                        d.waypoint_index = 1
-                        rerouted += 1
-                        self.route_history.append(new_rt.model_dump())
-                    else:
-                        if d.active_task_id:
-                            self._release_drone_tasks(d, reason="HAZARD_REPLAN_INFEASIBLE")
-                        d.current_route = None
-                        d.groundspeed_mps = 0.0
-                        d.status = DroneStatus.RETURNING if d.status == DroneStatus.RETURNING else DroneStatus.LOW_BATTERY
-                        self.log_event("replanning", "hazard_replan_rejected", f"No validated detour for {d.id}; flight held safely and task released.", entity_id=d.id)
-            if rerouted > 0:
-                self.replanning_count += 1
-                self.log_event("replanning", "hazard_reroute", f"Hazard invalidated {rerouted} active flight path(s); safe detours computed.")
 
-        return {"ok": True, "message": msg, "rerouted_drones": rerouted}
+        return {"ok": True, "message": msg, "rerouted_drones": rerouted, "state_version": self.state_version}
+
+    def get_building_damage_summary(self) -> Dict[str, Any]:
+        counts = {s.value: 0 for s in BuildingDamageState}
+        damaged_list = []
+        for b in self.city.buildings:
+            counts[b.damage_state.value] = counts.get(b.damage_state.value, 0) + 1
+            if b.damage_state != BuildingDamageState.INTACT or b.flood_depth_m > 0 or b.on_fire:
+                damaged_list.append({
+                    "id": b.id,
+                    "x": b.x,
+                    "z": b.z,
+                    "integrity": b.integrity,
+                    "damage_state": b.damage_state.value,
+                    "flood_depth_m": b.flood_depth_m,
+                    "on_fire": b.on_fire,
+                })
+        return {"counts": counts, "total_damaged": len(damaged_list), "damaged_buildings": damaged_list[:100]}
 
     def get_metrics(self) -> StrategyMetrics:
         completed = [t for t in self.tasks.values() if t.status == TaskStatus.COMPLETED]
@@ -750,6 +1112,7 @@ class SimulationWorld:
             "t": self.sim_time_s,
             "drones": {did: {"pos": d.position, "status": d.status.value, "bat": d.battery_percent, "hdg": d.heading_rad} for did, d in self.drones.items()},
             "tasks": {tid: t.status.value for tid, t in self.tasks.items()},
+            "disasters": {eid: {"r": ev.affected_radius, "sev": ev.severity, "st": ev.status.value, "wl": ev.water_level_m} for eid, ev in self.disasters.events.items()},
         })
         if len(self.replay_frames) > 400:
             self.replay_frames = self.replay_frames[-400:]
@@ -757,9 +1120,14 @@ class SimulationWorld:
     def serialize_state(self, include_city: bool = False) -> Dict[str, Any]:
         payload: Dict[str, Any] = {
             "run_id": self.run_id, "strategy": self.strategy.value, "status": self.status.value,
+            "state_version": self.state_version,
             "seed": self.seed, "sim_time_s": self.sim_time_s, "speed_multiplier": self.speed_multiplier,
             "weather": self.city.weather.model_dump(),
             "hazards": [h.model_dump() for h in self.city.hazards],
+            "disasters": [ev.model_dump() for ev in self.disasters.events.values()],
+            "disaster_timeline": self.disasters.timeline[-60:],
+            "survivors": [s.model_dump() for s in self.survivors.values()],
+            "building_damage_summary": self.get_building_damage_summary(),
             "stations": [s.model_dump() for s in self.city.stations],
             "drones": [d.model_dump() for d in self.drones.values()],
             "tasks": [t.model_dump() for t in self.tasks.values()],

@@ -45,14 +45,14 @@ export const ExperimentHistoryModal: React.FC = () => {
       <div className="w-[640px] bg-[#11161f] border border-[#2d3748] p-4 space-y-3">
         <div className="flex justify-between items-center border-b border-[#242c3a] pb-2">
           <div className="flex items-center gap-2 font-semibold text-zinc-100">
-            <Database className="w-4 h-4 text-zinc-400" /> SAVED EXPERIMENT ARCHIVE (SQLITE)
+            <Database className="w-4 h-4 text-zinc-400" /> SAVED EXPERIMENT ARCHIVE (JSON)
           </div>
           <button onClick={() => setOpen(false)} className="text-zinc-400 hover:text-zinc-100"><X className="w-4 h-4" /></button>
         </div>
 
         {rows.length === 0 ? (
           <div className="p-6 text-center text-zinc-400">
-            No saved experiments yet. Run a simulation and click EXPORT ZIP to persist a run to SQLite.
+            No saved experiments yet. Run a simulation and click EXPORT ZIP to persist a run to local JSON storage.
           </div>
         ) : (
           <div className="max-h-72 overflow-y-auto border border-[#242c3a] bg-[#0b0e14]">

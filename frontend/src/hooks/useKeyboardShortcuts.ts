@@ -10,8 +10,9 @@ export function useKeyboardShortcuts() {
 
   useEffect(() => {
     const onKeyDown = async (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement | null;
-      const tag = target?.tagName;
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+
       const store = useSimStore.getState();
 
       if (e.key === "Escape") {
@@ -25,13 +26,10 @@ export function useKeyboardShortcuts() {
           store.setShowHistoryModal(false);
           store.setShowReplayModal(false);
           store.setShowShortcutsModal(false);
-          store.setShowBriefingModal(false);
           store.selectDrone(null);
         }
         return;
       }
-
-      if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA" || target?.isContentEditable) return;
 
       if (e.key === "p" || e.key === "P") {
         store.setStageMode(!store.stageMode);
@@ -56,7 +54,6 @@ export function useKeyboardShortcuts() {
       }
 
       if (e.code === "Space") {
-        if (target?.closest("button, a, [role='button'], [contenteditable='true']")) return;
         e.preventDefault();
         const st = store.activeState?.status;
         if (st === "RUNNING") {

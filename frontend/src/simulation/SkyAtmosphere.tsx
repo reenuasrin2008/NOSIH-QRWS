@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from "react";
+import React, { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import * as THREE from "three";
 
@@ -46,12 +46,6 @@ export const SkyAtmosphere: React.FC<{ dayMode: boolean; windSpeed: number; wind
       }),
     [dayMode]
   );
-
-  useEffect(() => {
-    return () => {
-      skyMat.dispose();
-    };
-  }, [skyMat]);
 
   // Multi-puff organic cloud clusters instead of flat boxes
   const cloudClusters = useMemo(

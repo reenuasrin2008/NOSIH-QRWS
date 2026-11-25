@@ -1,5 +1,4 @@
 from __future__ import annotations
-import asyncio
 from typing import Any, Dict, Set
 from fastapi import WebSocket
 
@@ -19,7 +18,7 @@ class ConnectionManager:
         dead = []
         for ws in list(self.active):
             try:
-                await asyncio.wait_for(ws.send_json(message), timeout=2.0)
+                await ws.send_json(message)
             except Exception:
                 dead.append(ws)
         for ws in dead:

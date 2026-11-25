@@ -1,22 +1,22 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-const port = Number(process.env.QR_PORT || 5174);
-const backendOrigin = process.env.QR_BACKEND_ORIGIN || "http://127.0.0.1:8000";
-const backendWsOrigin = backendOrigin.replace(/^http/, "ws");
-
 export default defineConfig({
   plugins: [react()],
   define: {
     __APP_MODE__: JSON.stringify("control"),
   },
   server: {
-    host: "127.0.0.1",
-    port,
+    port: 5174,
     strictPort: true,
     proxy: {
-      "/api": backendOrigin,
-      "/ws": { target: backendWsOrigin, ws: true },
+      "/api": "http://127.0.0.1:8000",
+      "/ws": { target: "ws://127.0.0.1:8000", ws: true },
+      "/agent-api": {
+        target: "http://127.0.0.1:8001",
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/agent-api/, "/api/agent"),
+      },
     },
   },
 });

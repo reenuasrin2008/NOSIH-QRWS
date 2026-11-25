@@ -1,0 +1,20 @@
+{
+  "schema_version": "2.0.0",
+  "default_provider_mode": "AUTO",
+  "grok": {
+    "default_model_id": "grok-3-mini",
+    "default_base_url": "https://api.x.ai/v1",
+    "cooldown_rate_limit_s": 45,
+    "cooldown_quota_s": 300,
+    "cooldown_server_s": 20,
+    "max_consecutive_failures": 3
+  },
+  "gemini": {
+    "default_model_id": "gemini-2.5-flash",
+    "base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "cooldown_rate_limit_s": 45,
+    "cooldown_quota_s": 300,
+    "cooldown_server_s": 20,
+    "max_consecutive_failures": 3
+  }
+}

@@ -28,7 +28,7 @@ def solve_greedy(
         t for t in tasks.values()
         if t.status in (TaskStatus.PENDING, TaskStatus.REQUIRES_REASSIGNMENT, TaskStatus.UNASSIGNED)
     ]
-    pending.sort(key=lambda t: (PRIORITY_ORDER.get(t.priority.value, 2), t.deadline_seconds, t.id))
+    pending.sort(key=lambda t: (PRIORITY_ORDER[t.priority.value], t.deadline_seconds, t.id))
 
     eligible_drones = [
         d for d in drones.values()
@@ -55,10 +55,7 @@ def solve_greedy(
                 continue
             dist = math.hypot(d.position[0] - task.location[0], d.position[2] - task.location[2]) + drone_load[d.id] * 140.0
             if dist < best_dist:
-                ok, _, _ = is_drone_eligible_for_task(
-                    d, task, city, grid, strategy="greedy",
-                    assigned_task_ids=assignments[d.id] + [task.id], tasks=tasks,
-                )
+                ok, _, _ = is_drone_eligible_for_task(d, task, city, grid, strategy="greedy")
                 if ok:
                     best_dist = dist
                     best_drone = d
@@ -66,9 +63,7 @@ def solve_greedy(
         if best_drone is not None:
             assignments[best_drone.id].append(task.id)
             drone_load[best_drone.id] += 1
-            cost = estimate_assignment_cost(best_drone, task, city, sim_time_s)
-            if math.isfinite(cost):
-                total_obj += cost
+            total_obj += estimate_assignment_cost(best_drone, task, city, sim_time_s)
         else:
             missed += 1
 
