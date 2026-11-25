@@ -35,6 +35,7 @@ echo "== Frontend builds (if node_modules installed) =="
 if [ -d "${ROOT_DIR}/frontend/node_modules" ]; then
   (
     cd "${ROOT_DIR}/frontend"
+    npm run verify:layout
     npm run build >/dev/null
     npm run build:operations >/dev/null
     npm run build:jarvis >/dev/null

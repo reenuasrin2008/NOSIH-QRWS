@@ -7,17 +7,17 @@ import { createBuildingFacadeTexture } from "./textures";
 
 /**
  * 10,000m x 10,000m Continuous Flat Open-World 7-Country GTA-Style Continent.
- * All 7 countries exist side-by-side on one giant navigable flat world connected by
- * inter-country highways, rivers, coastlines, and distinct biome districts.
+ * Upgraded: Big, densely filled cities (~1,820 instanced buildings, ~1,500+ trees),
+ * scaled-up hospitals & shelters, and compact tactical UAV-scale drones.
  */
 export const COUNTRY_FLAT_ANCHORS: Record<string, { x: number; z: number; radius: number; ground: string }> = {
-  "COUNTRY-01": { x: 2600, z: -1200, radius: 1350, ground: "#687b64" }, // Aurelia Coast (East Coast)
-  "COUNTRY-02": { x: 0, z: -2700, radius: 1350, ground: "#6f776d" },    // Valtoria Highlands (North)
-  "COUNTRY-03": { x: 0, z: 0, radius: 1450, ground: "#5e7956" },        // Veridia Basin (Central River)
-  "COUNTRY-04": { x: -2500, z: -400, radius: 1450, ground: "#7f9653" }, // Solara Plains (West Farmland)
-  "COUNTRY-05": { x: -2100, z: 2200, radius: 1300, ground: "#5a6169" }, // Ferros Industrial (Southwest)
-  "COUNTRY-06": { x: -2400, z: -2600, radius: 1400, ground: "#c9a675" },// Kalahar Steppe (Northwest Arid)
-  "COUNTRY-07": { x: 1800, z: 2200, radius: 1400, ground: "#3d623b" },  // Sylva Reserve (Southeast Forest)
+  "COUNTRY-01": { x: 2600, z: -1200, radius: 1700, ground: "#687b64" }, // Aurelia Coast (East Coast)
+  "COUNTRY-02": { x: 0, z: -2700, radius: 1700, ground: "#6f776d" },    // Valtoria Highlands (North)
+  "COUNTRY-03": { x: 0, z: 0, radius: 1800, ground: "#5e7956" },        // Veridia Basin (Central River)
+  "COUNTRY-04": { x: -2500, z: -400, radius: 1750, ground: "#7f9653" }, // Solara Plains (West Farmland)
+  "COUNTRY-05": { x: -2100, z: 2200, radius: 1650, ground: "#5a6169" }, // Ferros Industrial (Southwest)
+  "COUNTRY-06": { x: -2400, z: -2600, radius: 1750, ground: "#c9a675" },// Kalahar Steppe (Northwest Arid)
+  "COUNTRY-07": { x: 1800, z: 2200, radius: 1750, ground: "#3d623b" },  // Sylva Reserve (Southeast Forest)
 };
 
 const HIGHWAY_LINKS: Array<[string, string]> = [
@@ -60,8 +60,8 @@ function createRoadStripeTexture(): THREE.CanvasTexture {
 function geoToFlatWorld(lat: number, lon: number, country: CountrySummary | undefined): [number, number] {
   if (!country) return [0, 0];
   const anchor = COUNTRY_FLAT_ANCHORS[country.country_id] || { x: 0, z: 0 };
-  const dx = THREE.MathUtils.clamp((lon - country.center.lon) * 850, -900, 900);
-  const dz = THREE.MathUtils.clamp(-(lat - country.center.lat) * 850, -900, 900);
+  const dx = THREE.MathUtils.clamp((lon - country.center.lon) * 850, -1100, 1100);
+  const dz = THREE.MathUtils.clamp(-(lat - country.center.lat) * 850, -1100, 1100);
   return [anchor.x + dx, anchor.z + dz];
 }
 
@@ -175,7 +175,7 @@ const BigFlatWorldScene: React.FC<
     roadTex.dispose();
   }, [commercialTex, residentialTex, roadTex]);
 
-  // Generate 700 GTA commercial towers + 700 mid-rise apartments across ALL 7 countries on the big flat map
+  // Generate ~260 big buildings per country (~1,820 total) filling each nation to 90% radius
   const { commBuildings, resBuildings } = useMemo(() => {
     const comm: Array<{ x: number; z: number; w: number; h: number; d: number }> = [];
     const res: Array<{ x: number; z: number; w: number; h: number; d: number }> = [];
@@ -183,30 +183,29 @@ const BigFlatWorldScene: React.FC<
 
     ids.forEach((cid, cIdx) => {
       const a = COUNTRY_FLAT_ANCHORS[cid];
-      for (let i = 0; i < 84; i++) {
-        const ang = i * 2.39996 + cIdx;
-        const r = 55 + Math.sqrt(i) * 78;
+      for (let i = 0; i < 260; i++) {
+        const ang = i * 2.39996 + cIdx * 1.1;
+        const r = 75 + Math.sqrt(i / 260) * (a.radius * 0.90);
         const x = a.x + Math.cos(ang) * r;
         const z = a.z + Math.sin(ang) * r;
-        // Keep central avenue cross clear
-        if (Math.abs(x - a.x) < 28 || Math.abs(z - a.z) < 28) continue;
-        const isDowntown = r < 340;
-        const seed = cIdx * 100 + i;
+        if (Math.abs(x - a.x) < 42 || Math.abs(z - a.z) < 42) continue;
+        const isDowntown = r < 480;
+        const seed = cIdx * 400 + i;
         if (isDowntown) {
           comm.push({
             x,
             z,
-            w: 28 + (seed % 4) * 8,
-            h: 55 + ((seed * 19) % 130),
-            d: 28 + ((seed + 2) % 4) * 8,
+            w: 44 + (seed % 4) * 10,
+            h: 105 + ((seed * 23) % 170),
+            d: 44 + ((seed + 2) % 4) * 10,
           });
         } else {
           res.push({
             x,
             z,
-            w: 22 + (seed % 3) * 6,
-            h: 18 + ((seed * 13) % 36),
-            d: 22 + ((seed + 1) % 3) * 6,
+            w: 36 + (seed % 4) * 8,
+            h: 34 + ((seed * 17) % 58),
+            d: 36 + ((seed + 1) % 4) * 8,
           });
         }
       }
@@ -214,7 +213,6 @@ const BigFlatWorldScene: React.FC<
     return { commBuildings: comm, resBuildings: res };
   }, []);
 
-  // Populate building instanced matrices once
   useEffect(() => {
     if (commMeshRef.current) {
       commBuildings.forEach((b, i) => {
@@ -267,20 +265,22 @@ const BigFlatWorldScene: React.FC<
     });
   }, []);
 
-  // 420 instanced trees (boulevard palms & Sylva forest groves) on the flat world
+  // ~1,200 instanced trees filling forests and greenbelts across all 7 nations
   const trees = useMemo(() => {
     const out: Array<{ x: number; z: number; h: number; r: number }> = [];
     const ids = Object.keys(COUNTRY_FLAT_ANCHORS);
     ids.forEach((cid, cIdx) => {
       const a = COUNTRY_FLAT_ANCHORS[cid];
-      const count = cid === "COUNTRY-07" ? 130 : cid === "COUNTRY-06" ? 18 : 45;
+      const count = cid === "COUNTRY-07" ? 320 : cid === "COUNTRY-06" ? 45 : 150;
       for (let i = 0; i < count; i++) {
         const ang = i * 2.39996 + cIdx * 1.7;
-        const dist = cid === "COUNTRY-07" ? 260 + Math.sqrt(i) * 95 : 420 + Math.sqrt(i) * 95;
+        const dist = cid === "COUNTRY-07"
+          ? 260 + Math.sqrt(i / count) * (a.radius * 1.15)
+          : 520 + Math.sqrt(i / count) * (a.radius * 1.15);
         const x = a.x + Math.cos(ang) * dist;
         const z = a.z + Math.sin(ang) * dist;
-        if (Math.abs(x - a.x) < 35 || Math.abs(z - a.z) < 35) continue;
-        out.push({ x, z, h: 16 + (i % 4) * 5, r: 9 + (i % 3) * 3 });
+        if (Math.abs(x - a.x) < 48 || Math.abs(z - a.z) < 48) continue;
+        out.push({ x, z, h: 24 + (i % 4) * 7, r: 15 + (i % 3) * 4.5 });
       }
     });
     return out;
@@ -290,7 +290,7 @@ const BigFlatWorldScene: React.FC<
     if (treesTrunkRef.current && treesCanopyRef.current) {
       trees.forEach((tr, i) => {
         dummy.position.set(tr.x, tr.h * 0.45, tr.z);
-        dummy.scale.set(2.2, tr.h * 0.9, 2.2);
+        dummy.scale.set(2.8, tr.h * 0.9, 2.8);
         dummy.rotation.set(0, 0, 0);
         dummy.updateMatrix();
         treesTrunkRef.current!.setMatrixAt(i, dummy.matrix);
@@ -345,7 +345,6 @@ const BigFlatWorldScene: React.FC<
     if (quantumRingRef.current) {
       quantumRingRef.current.rotation.z = t * 0.25;
     }
-    // Realistic smooth orbiting, banking, and altitude bobbing on all 98 live drones
     if (liveDronesRef.current) {
       liveDronesRef.current.children.forEach((grp, idx) => {
         const dStatus = allDrones[idx]?.status;
@@ -360,7 +359,7 @@ const BigFlatWorldScene: React.FC<
         const ang = t * (0.45 + (idx % 5) * 0.08) + idx * 0.9;
         grp.position.x = grp.userData.baseX + Math.cos(ang) * 42;
         grp.position.z = grp.userData.baseZ + Math.sin(ang) * 42;
-        grp.position.y = grp.userData.baseY + Math.sin(t * 2.4 + idx) * 3.5;
+        grp.position.y = grp.userData.baseY + Math.sin(t * 2.4 + idx) * 2.5;
         grp.rotation.y = -ang;
         grp.rotation.z = Math.sin(ang) * 0.14;
       });
@@ -433,7 +432,7 @@ const BigFlatWorldScene: React.FC<
 
       <CameraFlyRig selectedCountryId={selectedCountryId} preset={cameraPreset} controlsRef={controlsRef} />
 
-      {/* Giant 14,000m Ocean Base + 10,000m x 10,000m Flat Open-World Continent */}
+      {/* Giant Ocean Base + 10,000m x 10,000m Flat Open-World Continent */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.5, 0]} receiveShadow>
         <planeGeometry args={[18000, 18000]} />
         <meshStandardMaterial color="#135d7d" roughness={0.18} metalness={0.3} />
@@ -443,7 +442,7 @@ const BigFlatWorldScene: React.FC<
         <meshStandardMaterial color={dayMode ? "#657d5a" : "#1c2520"} roughness={0.94} />
       </mesh>
 
-      {/* Central Veridia River Channel + Coastal Harbor Bay + Multi-Span Highway Bridges */}
+      {/* Central Veridia River Channel + Multi-Span Highway Bridges */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[1400, 0.35, 160]}>
         <planeGeometry args={[6800, 145]} />
         <meshStandardMaterial color="#18789e" roughness={0.14} metalness={0.32} />
@@ -464,7 +463,8 @@ const BigFlatWorldScene: React.FC<
           </mesh>
         </group>
       ))}
-      {/* Airport Runway in Veridia Central & Aurelia Coast */}
+
+      {/* Airport Runways */}
       {[[420, -480], [2980, -1580]].map(([rx, rz], idx) => (
         <group key={idx} position={[rx, 0.75, rz]}>
           <mesh rotation={[-Math.PI / 2, 0, 0]}>
@@ -477,17 +477,19 @@ const BigFlatWorldScene: React.FC<
           </mesh>
         </group>
       ))}
+
       {/* Patchwork Farmland Fields in Solara Plains (COUNTRY-04) */}
       {[[-3100, -700, "#7ea34d"], [-3100, -250, "#b8a653"], [-2650, -950, "#5e8744"], [-2100, -950, "#9ab056"]].map(([fx, fz, col]: any, idx) => (
         <mesh key={idx} rotation={[-Math.PI / 2, 0, 0]} position={[fx, 0.4, fz]}>
-          <planeGeometry args={[420, 360]} />
+          <planeGeometry args={[480, 420]} />
           <meshStandardMaterial color={col} roughness={0.95} />
         </mesh>
       ))}
+
       {/* Industrial Cooling Towers in Ferros Industrial Union (COUNTRY-05) */}
       {[[-2550, 2450], [-2380, 2550], [-2210, 2450]].map(([tx, tz], idx) => (
-        <mesh key={idx} position={[tx, 65, tz]}>
-          <cylinderGeometry args={[32, 48, 130, 18]} />
+        <mesh key={idx} position={[tx, 85, tz]}>
+          <cylinderGeometry args={[42, 62, 170, 18]} />
           <meshStandardMaterial color="#94a3b8" roughness={0.82} />
         </mesh>
       ))}
@@ -504,7 +506,6 @@ const BigFlatWorldScene: React.FC<
 
         return (
           <group key={c.country_id}>
-            {/* Country Biome Ground */}
             <mesh
               rotation={[-Math.PI / 2, 0, 0]}
               position={[a.x, 0.25, a.z]}
@@ -517,30 +518,28 @@ const BigFlatWorldScene: React.FC<
               <meshStandardMaterial color={a.ground} roughness={0.93} />
             </mesh>
 
-            {/* Country Border Line */}
             <Line points={ringPts} color={isSel ? "#38bdf8" : c.color} lineWidth={isSel ? 3.0 : 1.4} />
 
             {/* Cross-City Asphalt Boulevards */}
             <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.65, a.z]}>
-              <planeGeometry args={[1650, 34]} />
+              <planeGeometry args={[2200, 42]} />
               <meshStandardMaterial map={roadTex} roughness={0.85} />
             </mesh>
             <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.66, a.z]}>
-              <planeGeometry args={[34, 1650]} />
+              <planeGeometry args={[42, 2200]} />
               <meshStandardMaterial map={roadTex} roughness={0.85} />
             </mesh>
 
-            {/* Mountain Peaks in Country 02 (Valtoria) & Forest Canopy in Country 07 (Sylva) */}
+            {/* Mountain Peaks in Country 02 (Valtoria) */}
             {c.country_id === "COUNTRY-02" &&
-              [[-550, -520, 420], [580, -480, 480], [0, -760, 540]].map(([ox, oz, h], idx) => (
+              [[-550, -520, 560], [580, -480, 620], [0, -760, 680]].map(([ox, oz, h], idx) => (
                 <mesh key={idx} position={[a.x + ox, h / 2, a.z + oz]}>
-                  <coneGeometry args={[360, h, 7]} />
+                  <coneGeometry args={[440, h, 7]} />
                   <meshStandardMaterial color="#7b838c" roughness={0.9} />
                 </mesh>
               ))}
 
-            {/* Floating Country Nameplate */}
-            <Html position={[a.x, 195, a.z]} distanceFactor={2600} style={{ pointerEvents: "none" }}>
+            <Html position={[a.x, 260, a.z]} distanceFactor={2600} style={{ pointerEvents: "none" }}>
               <div
                 className={`px-2 py-1 rounded text-xs font-mono whitespace-nowrap border shadow-md ${
                   isSel
@@ -569,13 +568,13 @@ const BigFlatWorldScene: React.FC<
             position={[(A.x + B.x) / 2, 0.55, (A.z + B.z) / 2]}
             rotation={[-Math.PI / 2, 0, -angle]}
           >
-            <planeGeometry args={[32, len]} />
+            <planeGeometry args={[36, len]} />
             <meshStandardMaterial map={roadTex} roughness={0.85} />
           </mesh>
         );
       })}
 
-      {/* Instanced GTA Commercial Skyscrapers & Residential Apartments across all 7 Countries */}
+      {/* Instanced Commercial Skyscrapers & Residential Apartments */}
       <instancedMesh ref={commMeshRef} args={[undefined, undefined, commBuildings.length]} castShadow receiveShadow>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial map={commercialTex} roughness={0.28} metalness={0.42} />
@@ -585,7 +584,7 @@ const BigFlatWorldScene: React.FC<
         <meshStandardMaterial map={residentialTex} roughness={0.8} metalness={0.05} />
       </instancedMesh>
 
-      {/* 420 Instanced Boulevard & Forest Trees */}
+      {/* Instanced Boulevard & Forest Trees */}
       <instancedMesh ref={treesTrunkRef} args={[undefined, undefined, trees.length]}>
         <cylinderGeometry args={[0.5, 0.7, 1, 6]} />
         <meshStandardMaterial color="#6b4f35" roughness={0.95} />
@@ -595,7 +594,7 @@ const BigFlatWorldScene: React.FC<
         <meshStandardMaterial color="#2f6b3a" roughness={0.85} />
       </instancedMesh>
 
-      {/* 160 Moving GTA Vehicles + 240 Animated Pedestrians */}
+      {/* 160 Moving Vehicles + 240 Animated Pedestrians */}
       <instancedMesh ref={carsMeshRef} args={[undefined, undefined, vehicles.length]} castShadow>
         <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial roughness={0.3} metalness={0.5} />
@@ -605,28 +604,28 @@ const BigFlatWorldScene: React.FC<
         <meshStandardMaterial roughness={0.85} />
       </instancedMesh>
 
-      {/* Live Backend Hospitals across all 7 Countries */}
+      {/* Live Backend Hospitals (Scaled Up ~1.8x) */}
       {allHospitals.map((h) => {
         const [x, z] = geoToFlatWorld(h.location.lat, h.location.lon, countryById[h.country_id]);
         return (
           <group key={h.hospital_id} position={[x, 0, z]}>
-            <mesh position={[0, 22, 0]}>
-              <boxGeometry args={[46, 44, 36]} />
+            <mesh position={[0, 38, 0]} castShadow receiveShadow>
+              <boxGeometry args={[84, 76, 66]} />
               <meshStandardMaterial color="#f8fafc" roughness={0.45} />
             </mesh>
-            <mesh position={[0, 45, 0]}>
-              <boxGeometry args={[20, 1.5, 6]} />
+            <mesh position={[0, 77.5, 0]}>
+              <boxGeometry args={[34, 2, 10]} />
               <meshStandardMaterial color="#dc2626" emissive="#dc2626" emissiveIntensity={0.8} />
             </mesh>
-            <mesh position={[0, 45, 0]}>
-              <boxGeometry args={[6, 1.5, 20]} />
+            <mesh position={[0, 77.5, 0]}>
+              <boxGeometry args={[10, 2, 34]} />
               <meshStandardMaterial color="#dc2626" emissive="#dc2626" emissiveIntensity={0.8} />
             </mesh>
           </group>
         );
       })}
 
-      {/* Live Backend Ambulances positioned on flat world */}
+      {/* Live Backend Ambulances */}
       {allAmbulances.map((a) => {
         const [ax, az] = geoToFlatWorld(a.location.lat, a.location.lon, countryById[a.country_id]);
         const isActive = a.status !== "AVAILABLE";
@@ -675,18 +674,18 @@ const BigFlatWorldScene: React.FC<
           );
         })}
 
-      {/* Live Backend Relief Shelters */}
+      {/* Live Backend Relief Shelters (Scaled Up ~1.8x) */}
       {allShelters.map((s) => {
         const [x, z] = geoToFlatWorld(s.location.lat, s.location.lon, countryById[s.country_id]);
         return (
-          <mesh key={s.shelter_id} position={[x, 9, z]}>
-            <cylinderGeometry args={[16, 20, 18, 8]} />
+          <mesh key={s.shelter_id} position={[x, 16, z]} castShadow>
+            <cylinderGeometry args={[30, 36, 32, 8]} />
             <meshStandardMaterial color="#0284c7" roughness={0.55} />
           </mesh>
         );
       })}
 
-      {/* Quantum-Inspired Phase Telemetry Halo over Active Country */}
+      {/* Quantum-Inspired Phase Telemetry Halo */}
       <mesh
         ref={quantumRingRef}
         rotation={[-Math.PI / 2, 0, 0]}
@@ -700,33 +699,33 @@ const BigFlatWorldScene: React.FC<
         <meshBasicMaterial color="#38bdf8" transparent opacity={0.35} side={THREE.DoubleSide} />
       </mesh>
 
-      {/* Live Backend Drones (All 98 across 7 Countries with smooth banking motion) */}
+      {/* Live Backend Drones — Compact Tactical UAV Scale (4.8m wingspan) */}
       <group ref={liveDronesRef}>
-      {allDrones.map((d) => {
-        const [x, z] = geoToFlatWorld(d.location.lat, d.location.lon, countryById[d.country_id]);
-        const y = d.status === "IN_FLIGHT" || d.status === "ASSIGNED" ? 165 : 85;
-        const color = d.status === "DESTROYED" ? "#ef4444" : d.status === "IN_FLIGHT" ? "#22c55e" : "#38bdf8";
-        return (
-          <group key={d.drone_id} position={[x, y, z]}>
-            <mesh>
-              <octahedronGeometry args={[9, 0]} />
-              <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.9} />
-            </mesh>
-            <mesh position={[0, 1.5, 0]}>
-              <boxGeometry args={[22, 1.5, 2.2]} />
-              <meshStandardMaterial color="#e2e8f0" metalness={0.7} roughness={0.25} />
-            </mesh>
-            <mesh position={[0, 1.5, 0]}>
-              <boxGeometry args={[2.2, 1.5, 22]} />
-              <meshStandardMaterial color="#e2e8f0" metalness={0.7} roughness={0.25} />
-            </mesh>
-            <Line points={[[0, 0, 0], [0, -y, 0]]} color={color} lineWidth={0.8} transparent opacity={0.28} />
-          </group>
-        );
-      })}
+        {allDrones.map((d) => {
+          const [x, z] = geoToFlatWorld(d.location.lat, d.location.lon, countryById[d.country_id]);
+          const y = d.status === "IN_FLIGHT" || d.status === "ASSIGNED" ? 135 : 65;
+          const color = d.status === "DESTROYED" ? "#ef4444" : d.status === "IN_FLIGHT" ? "#22c55e" : "#38bdf8";
+          return (
+            <group key={d.drone_id} position={[x, y, z]}>
+              <mesh>
+                <octahedronGeometry args={[1.6, 0]} />
+                <meshStandardMaterial color={color} emissive={color} emissiveIntensity={1.1} />
+              </mesh>
+              <mesh position={[0, 0.3, 0]}>
+                <boxGeometry args={[4.8, 0.3, 0.45]} />
+                <meshStandardMaterial color="#e2e8f0" metalness={0.7} roughness={0.25} />
+              </mesh>
+              <mesh position={[0, 0.3, 0]}>
+                <boxGeometry args={[0.45, 0.3, 4.8]} />
+                <meshStandardMaterial color="#e2e8f0" metalness={0.7} roughness={0.25} />
+              </mesh>
+              <Line points={[[0, 0, 0], [0, -y, 0]]} color={color} lineWidth={0.7} transparent opacity={0.22} />
+            </group>
+          );
+        })}
       </group>
 
-      {/* Active Disasters (Cyclone Funnel, Flood Pool, Fire Glow) */}
+      {/* Active Disasters */}
       <group ref={cycloneRef}>
         {disasters
           .filter((d) => d.status === "ACTIVE")
@@ -757,7 +756,7 @@ const BigFlatWorldScene: React.FC<
           })}
       </group>
 
-      {/* Candidate 3D Drone Routes from JARVIS / Route Explorer */}
+      {/* Candidate 3D Drone Routes */}
       {candidateRoutes.slice(0, 10).map((rc) => {
         const c = countryById[selectedCountryId];
         const pts = rc.waypoints.map((w) => {
@@ -794,11 +793,11 @@ export const BigFlatOpenWorld3D: React.FC<BigFlatWorldProps> = (props) => {
         <BigFlatWorldScene {...props} timeOfDay={timeOfDay} cameraPreset={cameraPreset} />
       </Canvas>
 
-      {/* Bottom-Left GTA Square Radar Minimap of All 7 Countries */}
-      <div className="absolute bottom-4 left-4 w-48 h-36 rounded bg-white/95 border border-slate-300 shadow-md p-2 shadow-lg">
+      {/* Bottom-Left Continent Radar Minimap */}
+      <div className="absolute bottom-4 left-4 w-48 h-36 rounded bg-white/95 border border-slate-300 shadow-md p-2">
         <div className="text-[9px] font-mono text-slate-500 flex justify-between mb-1">
           <span>CONTINENT RADAR (10×10 KM)</span>
-          <span className="text-emerald-400">7 NATIONS</span>
+          <span className="text-emerald-600 font-semibold">7 NATIONS</span>
         </div>
         <div className="relative w-full h-[104px] bg-[#E8F1F8] rounded-sm border border-slate-300 overflow-hidden">
           {props.countries.map((c) => {
@@ -816,7 +815,7 @@ export const BigFlatOpenWorld3D: React.FC<BigFlatWorldProps> = (props) => {
                   c.active_disasters > 0
                     ? "bg-red-500 border-white animate-pulse"
                     : isSel
-                    ? "bg-sky-400 border-white"
+                    ? "bg-sky-500 border-white"
                     : "bg-emerald-500/80 border-slate-900"
                 }`}
                 style={{ left: `${leftPct}%`, top: `${topPct}%` }}
@@ -832,17 +831,17 @@ export const BigFlatOpenWorld3D: React.FC<BigFlatWorldProps> = (props) => {
           <button
             key={p}
             onClick={() => setCameraPreset(p)}
-            className={`px-2 py-0.5 rounded uppercase ${cameraPreset === p ? "bg-sky-600 text-white" : "text-slate-700 hover:bg-slate-800"}`}
+            className={`px-2 py-0.5 rounded uppercase ${cameraPreset === p ? "bg-sky-600 text-white" : "text-slate-700 hover:bg-slate-200"}`}
           >
             {p}
           </button>
         ))}
-        <span className="text-slate-600">|</span>
+        <span className="text-slate-400">|</span>
         {(["golden", "day", "night"] as const).map((tod) => (
           <button
             key={tod}
             onClick={() => setTimeOfDay(tod)}
-            className={`px-2 py-0.5 rounded uppercase ${timeOfDay === tod ? "bg-amber-600 text-white" : "text-slate-700 hover:bg-slate-800"}`}
+            className={`px-2 py-0.5 rounded uppercase ${timeOfDay === tod ? "bg-amber-600 text-white" : "text-slate-700 hover:bg-slate-200"}`}
           >
             {tod}
           </button>

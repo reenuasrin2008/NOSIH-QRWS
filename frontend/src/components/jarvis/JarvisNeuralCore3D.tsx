@@ -774,13 +774,13 @@ export const JarvisNeuralCore3D: React.FC<JarvisNeuralCore3DProps> = (props) => 
   const enablePostProcessing = !prefersReducedMotion && !isLowQuality;
 
   return (
-    <div className="w-full h-full bg-[#030201] relative overflow-hidden">
+    <div className="w-full h-full bg-black relative overflow-hidden">
       {/* Subtle radial molten aura behind canvas */}
       <div
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(circle at 50% 48%, rgba(255, 140, 26, 0.14) 0%, rgba(255, 85, 0, 0.05) 36%, rgba(3, 2, 1, 0) 68%)",
+            "radial-gradient(circle at 50% 48%, rgba(255, 255, 255, 0.04) 0%, rgba(0, 0, 0, 0) 68%)",
         }}
       />
 
@@ -794,7 +794,7 @@ export const JarvisNeuralCore3D: React.FC<JarvisNeuralCore3DProps> = (props) => 
           toneMappingExposure: 1.18,
         }}
       >
-        <color attach="background" args={["#030201"]} />
+        <color attach="background" args={["#000000"]} />
         <NeuralCoreMesh
           {...props}
           mode={mode}
@@ -813,6 +813,15 @@ export const JarvisNeuralCore3D: React.FC<JarvisNeuralCore3DProps> = (props) => 
           </EffectComposer>
         )}
       </Canvas>
+
+      {/* Keep bloom glow centered so the panel background remains true black. */}
+      <div
+        className="pointer-events-none absolute inset-0"
+        style={{
+          background:
+            "radial-gradient(circle at 50% 48%, rgba(0, 0, 0, 0) 28%, rgba(0, 0, 0, 0.28) 60%, rgba(0, 0, 0, 0.92) 100%)",
+        }}
+      />
 
       {/* Stark Holographic HUD Frame Overlay (amber-orange technical lines, scan bar, rotating corner reticle) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">

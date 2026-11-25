@@ -49,9 +49,9 @@ function getDroneAccent(drone: DroneState): string {
 }
 
 function getDroneScale(drone: DroneState): number {
-  if (drone.drone_type === "heavy_lift") return 3.3;
-  if (drone.drone_type === "surveillance") return 2.3;
-  return 2.7;
+  if (drone.drone_type === "heavy_lift") return 1.15;
+  if (drone.drone_type === "surveillance") return 0.8;
+  return 0.95;
 }
 
 /** Per-drone contextual overlays (labels, tethers, scan cones, cargo winch, destroyed effects). */

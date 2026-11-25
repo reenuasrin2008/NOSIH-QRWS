@@ -36,7 +36,7 @@ export const App: React.FC = () => {
       ) : (
         <WorldCommandApp />
       )}
-      <DemoDirector />
+      {mode !== "jarvis" && <DemoDirector />}
       <CinematicDirector />
     </Suspense>
   );

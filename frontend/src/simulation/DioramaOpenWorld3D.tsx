@@ -15,7 +15,23 @@ import {
 } from "@react-three/postprocessing";
 import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
+import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { CountrySummary, DisasterEvent, GeoPoint } from "../shared/globalTypes";
+import { sampleTrafficPath } from "./roadGraph";
+import {
+  COUNTRY_FLAT_ANCHORS,
+  assignHospitalPads,
+  assignRoadsideSpots,
+  assignShelterPads,
+  createWorldLayout,
+  generateBuildings,
+  generateTrees,
+  samplePolyline,
+  veridiaRiverZ,
+  type LayoutRoad,
+  type OrganicShape,
+} from "./worldLayout";
 import {
   createBuildingFacadeTexture,
   createCommercialRoughnessMap,
@@ -24,38 +40,15 @@ import {
 import { RealisticNPCs3D } from "./RealisticNPCs3D";
 import { DisasterFootprint } from "./DisasterFootprint";
 import { IntroCameraRig } from "./IntroCameraRig";
+import { NaturalEnvironment } from "./NaturalEnvironment";
+import { AmbientBirds } from "./AmbientBirds";
+import { buildRibbonGeometry, buildShapeGeometry, scaleShapePoints } from "./worldGeometry";
 
 /**
- * 10,000m x 10,000m Continuous Flat 7-Country Architectural Diorama Open World.
- * Bright, crisp sunlit architectural model aesthetic with iconic landmarks,
- * winding turquoise Veridia River with rocky pebble banks, multi-tower suspension
- * bridges, Central Parks, coastal harbor ferries, drifting fluffy clouds,
- * 160 diorama vehicles, 220 articulated RealisticNPCs3D, and live backend assets.
+ * 10,000m x 10,000m Continuous 7-Country Architectural Open World.
+ * Organic terrain, winding roads, lakes, clustered forests, ambient birds,
+ * iconic landmarks, live traffic, and authoritative backend disaster assets.
  */
-export const COUNTRY_FLAT_ANCHORS: Record<
-  string,
-  { x: number; z: number; radius: number; ground: string }
-> = {
-  "COUNTRY-01": { x: 2600, z: -1200, radius: 1350, ground: "#8ec182" }, // Aurelia Coast (East Coast)
-  "COUNTRY-02": { x: 0, z: -2700, radius: 1350, ground: "#9ea89d" }, // Valtoria Highlands (North)
-  "COUNTRY-03": { x: 0, z: 0, radius: 1450, ground: "#7eb974" }, // Veridia Basin (Central River)
-  "COUNTRY-04": { x: -2500, z: -400, radius: 1450, ground: "#a5c272" }, // Solara Plains (West Farmland)
-  "COUNTRY-05": { x: -2100, z: 2200, radius: 1300, ground: "#8f98a1" }, // Ferros Industrial (Southwest)
-  "COUNTRY-06": { x: -2400, z: -2600, radius: 1400, ground: "#dfc295" }, // Kalahar Steppe (Northwest Arid)
-  "COUNTRY-07": { x: 1800, z: 2200, radius: 1400, ground: "#619b62" }, // Sylva Reserve (Southeast Forest)
-};
-
-const HIGHWAY_LINKS: Array<[string, string]> = [
-  ["COUNTRY-03", "COUNTRY-01"],
-  ["COUNTRY-03", "COUNTRY-02"],
-  ["COUNTRY-03", "COUNTRY-04"],
-  ["COUNTRY-03", "COUNTRY-05"],
-  ["COUNTRY-03", "COUNTRY-07"],
-  ["COUNTRY-02", "COUNTRY-06"],
-  ["COUNTRY-04", "COUNTRY-06"],
-  ["COUNTRY-04", "COUNTRY-05"],
-  ["COUNTRY-01", "COUNTRY-07"],
-];
 
 const SEDAN_COLORS = [
   "#2563eb",
@@ -83,11 +76,6 @@ const PEBBLE_COLORS = ["#c7c1b6", "#a8a298", "#d8d3c9", "#918c84", "#b8b0a3"];
 function seededNoise(i: number): number {
   const x = Math.sin(i * 127.1 + 311.7) * 43758.5453123;
   return x - Math.floor(x);
-}
-
-/** Winding Veridia River centerline Z for a given X in [-1800, 4800]. */
-function veridiaRiverZ(x: number): number {
-  return 210 + Math.sin(x * 0.00145) * 195 + Math.cos(x * 0.00072 + 0.6) * 95;
 }
 
 /** Clean 4-lane architectural diorama asphalt with double-yellow centerline & sidewalks. */
@@ -138,7 +126,7 @@ function createDioramaAsphaltTexture(): THREE.CanvasTexture {
   const tex = new THREE.CanvasTexture(c);
   tex.wrapS = THREE.RepeatWrapping;
   tex.wrapT = THREE.RepeatWrapping;
-  tex.repeat.set(1, 26);
+  tex.repeat.set(1, 1);
   tex.anisotropy = 8;
   return tex;
 }
@@ -286,16 +274,49 @@ function geoToFlatWorld(
   return [anchor.x + dx, anchor.z + dz];
 }
 
+function createVehicleWheelGeometry(): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  const wheelPositions: Array<[number, number, number]> = [
+    [-2.65, 0.85, 3.65],
+    [2.65, 0.85, 3.65],
+    [-2.65, 0.85, -3.65],
+    [2.65, 0.85, -3.65],
+  ];
+  wheelPositions.forEach(([x, y, z]) => {
+    const wheel = new THREE.CylinderGeometry(0.86, 0.86, 0.62, 20, 1);
+    wheel.rotateZ(Math.PI / 2);
+    wheel.translate(x, y, z);
+    parts.push(wheel);
+  });
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach((part) => part.dispose());
+  return merged;
+}
+
+function createVehicleLightGeometry(front: boolean): THREE.BufferGeometry {
+  const parts: THREE.BufferGeometry[] = [];
+  [-1.55, 1.55].forEach((x) => {
+    const light = new RoundedBoxGeometry(1.15, front ? 0.48 : 0.38, 0.24, 2, 0.08);
+    light.translate(x, front ? 1.72 : 1.55, front ? 5.72 : -5.72);
+    parts.push(light);
+  });
+  const merged = mergeGeometries(parts, false)!;
+  parts.forEach((part) => part.dispose());
+  return merged;
+}
+
 /** Build a smooth winding ribbon geometry for the Veridia River. */
 function buildWindingRiverGeometry(
   xStart: number,
   xEnd: number,
   segments: number,
-  halfWidth: number
+  halfWidth: number,
+  crossSegments = 8
 ): THREE.BufferGeometry {
   const positions: number[] = [];
   const uvs: number[] = [];
   const indices: number[] = [];
+  const rowSize = crossSegments + 1;
 
   for (let i = 0; i <= segments; i++) {
     const u = i / segments;
@@ -304,21 +325,25 @@ function buildWindingRiverGeometry(
     const dx = 12;
     const dz = veridiaRiverZ(x + dx) - veridiaRiverZ(x - dx);
     const len = Math.hypot(2 * dx, dz) || 1;
-    // Perpendicular normal in XZ plane
     const nx = -dz / len;
     const nz = (2 * dx) / len;
-    // Widen slightly as river reaches the eastern coastal harbor
-    const w = halfWidth * (1 + u * 0.55);
+    const width = halfWidth * (1 + u * 0.55);
 
-    positions.push(x + nx * w, 0, z + nz * w);
-    positions.push(x - nx * w, 0, z - nz * w);
-    uvs.push(u * 12, 0);
-    uvs.push(u * 12, 1);
+    for (let j = 0; j <= crossSegments; j += 1) {
+      const lateral = (j / crossSegments) * 2 - 1;
+      const offset = lateral * width;
+      const wave = Math.sin(x * 0.018 + lateral * 3.2) * 0.11;
+      positions.push(x + nx * offset, wave, z + nz * offset);
+      uvs.push(u * 12, j / crossSegments);
+    }
 
     if (i < segments) {
-      const base = i * 2;
-      indices.push(base, base + 1, base + 2);
-      indices.push(base + 1, base + 3, base + 2);
+      const base = i * rowSize;
+      for (let j = 0; j < crossSegments; j += 1) {
+        const current = base + j;
+        indices.push(current, current + rowSize, current + 1);
+        indices.push(current + 1, current + rowSize, current + rowSize + 1);
+      }
     }
   }
 
@@ -632,6 +657,94 @@ const SuspensionBridge: React.FC<{
   );
 };
 
+const noRaycast = () => null;
+
+const CountryGround: React.FC<{
+  shape: OrganicShape;
+  color: string;
+  onSelect: () => void;
+}> = ({ shape, color, onSelect }) => {
+  const geometry = useMemo(() => buildShapeGeometry(shape.points, 0.22), [shape]);
+  useEffect(() => () => geometry.dispose(), [geometry]);
+  return (
+    <mesh geometry={geometry} receiveShadow onClick={(event) => { event.stopPropagation(); onSelect(); }}>
+      <meshStandardMaterial color={color} roughness={0.96} />
+    </mesh>
+  );
+};
+
+const HubMesh: React.FC<{ shape: OrganicShape; dayMode: boolean; asphalt: THREE.Texture }> = ({ shape, dayMode, asphalt }) => {
+  const sidewalkPoints = useMemo(() => scaleShapePoints(shape.points, shape, 1.2), [shape]);
+  const sidewalkGeometry = useMemo(() => buildShapeGeometry(sidewalkPoints, 0.48), [sidewalkPoints]);
+  const roadGeometry = useMemo(() => buildShapeGeometry(shape.points, 0.6), [shape]);
+  useEffect(() => () => {
+    sidewalkGeometry.dispose();
+    roadGeometry.dispose();
+  }, [sidewalkGeometry, roadGeometry]);
+  return (
+    <group raycast={noRaycast}>
+      <mesh geometry={sidewalkGeometry} receiveShadow>
+        <meshStandardMaterial color={dayMode ? "#c7ced4" : "#39424c"} roughness={0.9} />
+      </mesh>
+      <mesh geometry={roadGeometry} receiveShadow>
+        <meshStandardMaterial map={asphalt} roughness={0.88} />
+      </mesh>
+    </group>
+  );
+};
+
+const RoadRibbon: React.FC<{ road: LayoutRoad; dayMode: boolean; asphalt: THREE.Texture }> = ({ road, dayMode, asphalt }) => {
+  const sidewalkGeometry = useMemo(() => buildRibbonGeometry(road.points, road.width + 13, 0.5), [road]);
+  const roadGeometry = useMemo(() => buildRibbonGeometry(road.points, road.width, 0.61), [road]);
+  useEffect(() => () => {
+    sidewalkGeometry.dispose();
+    roadGeometry.dispose();
+  }, [sidewalkGeometry, roadGeometry]);
+  return (
+    <group raycast={noRaycast}>
+      <mesh geometry={sidewalkGeometry} receiveShadow>
+        <meshStandardMaterial color={dayMode ? "#c7ced4" : "#39424c"} roughness={0.9} />
+      </mesh>
+      <mesh geometry={roadGeometry} receiveShadow>
+        {road.kind === "access" ? (
+          <meshStandardMaterial color={dayMode ? "#737d87" : "#3b4350"} roughness={0.9} />
+        ) : (
+          <meshStandardMaterial map={asphalt} roughness={0.88} />
+        )}
+      </mesh>
+    </group>
+  );
+};
+
+const RoadCrosswalk: React.FC<{ road: LayoutRoad; distance: number; texture: THREE.Texture }> = ({ road, distance, texture }) => {
+  const sample = useMemo(() => samplePolyline(road.points, distance), [road, distance]);
+  return (
+    <mesh
+      position={[sample.point.x, 0.73, sample.point.z]}
+      rotation={[-Math.PI / 2, 0, Math.atan2(sample.tangent.x, sample.tangent.z)]}
+      raycast={noRaycast}
+    >
+      <planeGeometry args={[30, 12]} />
+      <meshStandardMaterial map={texture} transparent roughness={0.78} />
+    </mesh>
+  );
+};
+
+let cachedWorldData: {
+  worldLayout: ReturnType<typeof createWorldLayout>;
+  buildings: ReturnType<typeof generateBuildings>;
+  trees: ReturnType<typeof generateTrees>;
+} | null = null;
+
+function getWorldData() {
+  if (!cachedWorldData) {
+    const worldLayout = createWorldLayout();
+    const buildings = generateBuildings(worldLayout);
+    cachedWorldData = { worldLayout, buildings, trees: generateTrees(worldLayout, buildings) };
+  }
+  return cachedWorldData;
+}
+
 const DioramaWorldScene: React.FC<
   DioramaOpenWorldProps & {
     timeOfDay: "day" | "golden" | "night";
@@ -665,10 +778,14 @@ const DioramaWorldScene: React.FC<
   const resMeshRef = useRef<THREE.InstancedMesh>(null);
   const carBodyRef = useRef<THREE.InstancedMesh>(null);
   const carCabinRef = useRef<THREE.InstancedMesh>(null);
+  const carWheelRef = useRef<THREE.InstancedMesh>(null);
+  const carFrontLightRef = useRef<THREE.InstancedMesh>(null);
+  const carRearLightRef = useRef<THREE.InstancedMesh>(null);
   const treeTrunkRef = useRef<THREE.InstancedMesh>(null);
   const treeCanopyARef = useRef<THREE.InstancedMesh>(null);
   const treeCanopyBRef = useRef<THREE.InstancedMesh>(null);
   const treeCanopyCRef = useRef<THREE.InstancedMesh>(null);
+  const treeConeRef = useRef<THREE.InstancedMesh>(null);
   const pebbleRef = useRef<THREE.InstancedMesh>(null);
   const cloudPuffRef = useRef<THREE.InstancedMesh>(null);
   const waveCrestRef = useRef<THREE.InstancedMesh>(null);
@@ -679,6 +796,7 @@ const DioramaWorldScene: React.FC<
   const quantumRingRef = useRef<THREE.Mesh>(null);
 
   const dummy = useMemo(() => new THREE.Object3D(), []);
+  const hiddenMatrix = useMemo(() => new THREE.Matrix4().makeScale(0, 0, 0), []);
 
   const dayMode = timeOfDay !== "night";
   const isGolden = timeOfDay === "golden";
@@ -716,62 +834,68 @@ const DioramaWorldScene: React.FC<
     };
   }, [textures]);
 
-  const riverGeo = useMemo(() => buildWindingRiverGeometry(-1750, 4800, 72, 76), []);
+  const riverGeo = useMemo(() => buildWindingRiverGeometry(-1750, 4800, 112, 76), []);
   useEffect(() => {
     return () => riverGeo.dispose();
   }, [riverGeo]);
 
-  // Generate commercial towers + warm brick/sandstone mid-rises across all 7 countries
+  const vehicleGeometry = useMemo(() => {
+    const body = new RoundedBoxGeometry(5.2, 2.2, 11.4, 4, 0.48);
+    body.translate(0, 1.55, 0);
+    const cabin = new RoundedBoxGeometry(4.35, 1.75, 5.9, 4, 0.38);
+    cabin.translate(0, 3.12, -0.25);
+    return {
+      body,
+      cabin,
+      wheels: createVehicleWheelGeometry(),
+      frontLights: createVehicleLightGeometry(true),
+      rearLights: createVehicleLightGeometry(false),
+    };
+  }, []);
+  useEffect(() => {
+    return () => {
+      Object.values(vehicleGeometry).forEach((geometry) => geometry.dispose());
+    };
+  }, [vehicleGeometry]);
+
+  const buildingGeometry = useMemo(() => new RoundedBoxGeometry(1, 1, 1, 2, 0.035), []);
+  useEffect(() => {
+    return () => buildingGeometry.dispose();
+  }, [buildingGeometry]);
+
+  const { worldLayout, buildings: layoutBuildings, trees: layoutTrees } = useMemo(() => getWorldData(), []);
+  const trees = useMemo(() => layoutTrees.map((tree) => ({
+    ...tree,
+    h: tree.height,
+    r: tree.radius,
+    color: new THREE.Color(tree.color),
+  })), [layoutTrees]);
+
+  // Street-oriented towers and mid-rises generated from the shared organic blocks.
   const { commBuildings, resBuildings } = useMemo(() => {
-    const comm: Array<{ x: number; z: number; w: number; h: number; d: number; color: THREE.Color }> = [];
-    const res: Array<{ x: number; z: number; w: number; h: number; d: number; color: THREE.Color }> = [];
-    const ids = Object.keys(COUNTRY_FLAT_ANCHORS);
-
-    ids.forEach((cid, cIdx) => {
-      const a = COUNTRY_FLAT_ANCHORS[cid];
-      for (let i = 0; i < 82; i++) {
-        const ang = i * 2.39996 + cIdx;
-        const r = 68 + Math.sqrt(i) * 76;
-        const x = a.x + Math.cos(ang) * r;
-        const z = a.z + Math.sin(ang) * r;
-        // Keep central boulevards, Central Park (+215,+215), and Veridia River clear
-        if (Math.abs(x - a.x) < 36 || Math.abs(z - a.z) < 36) continue;
-        if (Math.hypot(x - (a.x + 215), z - (a.z + 215)) < 155) continue;
-        if (x > -1800 && x < 4800 && Math.abs(z - veridiaRiverZ(x)) < 115) continue;
-
-        const seed = cIdx * 100 + i;
-        if (r < 320) {
-          comm.push({
-            x,
-            z,
-            w: 28 + (seed % 4) * 7,
-            h: 54 + ((seed * 19) % 115),
-            d: 28 + ((seed + 2) % 4) * 7,
-            color: new THREE.Color(
-              seed % 3 === 0 ? "#dbeafe" : seed % 3 === 1 ? "#f1e8db" : "#e2e8f0"
-            ),
-          });
-        } else {
-          res.push({
-            x,
-            z,
-            w: 22 + (seed % 3) * 6,
-            h: 20 + ((seed * 13) % 34),
-            d: 22 + ((seed + 1) % 3) * 6,
-            color: new THREE.Color(WARM_MIDRISE_TINTS[seed % WARM_MIDRISE_TINTS.length]),
-          });
-        }
-      }
+    const comm: Array<{ x: number; z: number; w: number; h: number; d: number; rotationY: number; color: THREE.Color }> = [];
+    const res: Array<{ x: number; z: number; w: number; h: number; d: number; rotationY: number; color: THREE.Color }> = [];
+    layoutBuildings.forEach((building) => {
+      const target = building.kind === "commercial" ? comm : res;
+      target.push({
+        x: building.x,
+        z: building.z,
+        w: building.width,
+        h: building.height,
+        d: building.depth,
+        rotationY: building.rotationY,
+        color: new THREE.Color(building.color),
+      });
     });
     return { commBuildings: comm, resBuildings: res };
-  }, []);
+  }, [layoutBuildings]);
 
   useEffect(() => {
     if (commMeshRef.current) {
       commBuildings.forEach((b, i) => {
         dummy.position.set(b.x, b.h / 2, b.z);
         dummy.scale.set(b.w, b.h, b.d);
-        dummy.rotation.set(0, 0, 0);
+        dummy.rotation.set(0, b.rotationY, 0);
         dummy.updateMatrix();
         commMeshRef.current!.setMatrixAt(i, dummy.matrix);
         commMeshRef.current!.setColorAt(i, b.color);
@@ -783,7 +907,7 @@ const DioramaWorldScene: React.FC<
       resBuildings.forEach((b, i) => {
         dummy.position.set(b.x, b.h / 2, b.z);
         dummy.scale.set(b.w, b.h, b.d);
-        dummy.rotation.set(0, 0, 0);
+        dummy.rotation.set(0, b.rotationY, 0);
         dummy.updateMatrix();
         resMeshRef.current!.setMatrixAt(i, dummy.matrix);
         resMeshRef.current!.setColorAt(i, b.color);
@@ -793,98 +917,86 @@ const DioramaWorldScene: React.FC<
     }
   }, [commBuildings, resBuildings, dummy]);
 
-  // Lush rounded multi-sphere tree clusters (Central Parks + boulevard & Sylva forest groves)
-  const trees = useMemo(() => {
-    const out: Array<{ x: number; z: number; h: number; r: number; color: THREE.Color }> = [];
-    const ids = Object.keys(COUNTRY_FLAT_ANCHORS);
-
-    ids.forEach((cid, cIdx) => {
-      const a = COUNTRY_FLAT_ANCHORS[cid];
-
-      // 28 lush rounded trees framing each city's Central Park around the winding blue pond
-      const parkCx = a.x + 215;
-      const parkCz = a.z + 215;
-      for (let p = 0; p < 28; p++) {
-        const ang = (p / 28) * Math.PI * 2 + cIdx * 0.3;
-        const rad = 82 + (p % 3) * 20;
-        const tx = parkCx + Math.cos(ang) * rad;
-        const tz = parkCz + Math.sin(ang) * rad * 0.88;
-        out.push({
-          x: tx,
-          z: tz,
-          h: 13 + (p % 4) * 3.5,
-          r: 9 + (p % 3) * 2.5,
-          color: new THREE.Color(TREE_GREENS[(p + cIdx) % TREE_GREENS.length]),
-        });
-      }
-
-      // Outer biome groves (dense in Sylva Reserve, sparse in Kalahar Steppe)
-      const count = cid === "COUNTRY-07" ? 120 : cid === "COUNTRY-06" ? 16 : 38;
-      for (let i = 0; i < count; i++) {
-        const ang = i * 2.39996 + cIdx * 1.7;
-        const dist = cid === "COUNTRY-07" ? 270 + Math.sqrt(i) * 92 : 430 + Math.sqrt(i) * 88;
-        const tx = a.x + Math.cos(ang) * dist;
-        const tz = a.z + Math.sin(ang) * dist;
-        if (Math.abs(tx - a.x) < 42 || Math.abs(tz - a.z) < 42) continue;
-        if (tx > -1800 && tx < 4800 && Math.abs(tz - veridiaRiverZ(tx)) < 110) continue;
-        out.push({
-          x: tx,
-          z: tz,
-          h: 15 + (i % 4) * 4,
-          r: 10 + (i % 3) * 2.8,
-          color: new THREE.Color(TREE_GREENS[(i + cIdx) % TREE_GREENS.length]),
-        });
-      }
-    });
-    return out;
-  }, []);
-
   useEffect(() => {
     if (
       !treeTrunkRef.current ||
       !treeCanopyARef.current ||
       !treeCanopyBRef.current ||
-      !treeCanopyCRef.current
+      !treeCanopyCRef.current ||
+      !treeConeRef.current
     ) {
       return;
     }
 
     trees.forEach((tr, i) => {
-      // Trunk
+      const cos = Math.cos(tr.rotationY);
+      const sin = Math.sin(tr.rotationY);
+      const conifer = tr.kind === "conifer";
+      const acacia = tr.kind === "acacia";
+      const trunkRadius = conifer ? 1.65 : 2.1;
       dummy.position.set(tr.x, tr.h * 0.42, tr.z);
-      dummy.scale.set(2.1, tr.h * 0.85, 2.1);
-      dummy.rotation.set(0, 0, 0);
+      dummy.scale.set(trunkRadius, tr.h * 0.85, trunkRadius);
+      dummy.rotation.set(0, tr.rotationY, 0);
       dummy.updateMatrix();
       treeTrunkRef.current!.setMatrixAt(i, dummy.matrix);
 
-      // Rounded multi-sphere foliage cluster (3 overlapping puffs per tree)
-      dummy.position.set(tr.x, tr.h * 0.96, tr.z);
-      dummy.scale.set(tr.r * 1.05, tr.r * 0.95, tr.r * 1.05);
-      dummy.updateMatrix();
-      treeCanopyARef.current!.setMatrixAt(i, dummy.matrix);
-      treeCanopyARef.current!.setColorAt(i, tr.color);
+      if (conifer) {
+        dummy.position.set(tr.x, tr.h * 0.63, tr.z);
+        dummy.scale.set(tr.r * 0.9, tr.h * 0.95, tr.r * 0.9);
+        dummy.updateMatrix();
+        treeConeRef.current!.setMatrixAt(i, dummy.matrix);
+        treeConeRef.current!.setColorAt(i, tr.color);
+        treeCanopyARef.current!.setMatrixAt(i, hiddenMatrix);
+        treeCanopyBRef.current!.setMatrixAt(i, hiddenMatrix);
+        treeCanopyCRef.current!.setMatrixAt(i, hiddenMatrix);
+      } else {
+        dummy.position.set(tr.x, tr.h * 0.63, tr.z);
+        dummy.scale.set(0, 0, 0);
+        dummy.updateMatrix();
+        treeConeRef.current!.setMatrixAt(i, dummy.matrix);
+        treeConeRef.current!.setColorAt(i, tr.color);
 
-      dummy.position.set(tr.x + tr.r * 0.48, tr.h * 0.84, tr.z + tr.r * 0.35);
-      dummy.scale.set(tr.r * 0.78, tr.r * 0.75, tr.r * 0.78);
-      dummy.updateMatrix();
-      treeCanopyBRef.current!.setMatrixAt(i, dummy.matrix);
-      treeCanopyBRef.current!.setColorAt(i, tr.color);
+        const puff = (localX: number, localY: number, localZ: number, sx: number, sy: number, sz: number) => ({
+          x: tr.x + localX * cos + localZ * sin,
+          y: localY,
+          z: tr.z - localX * sin + localZ * cos,
+          sx,
+          sy,
+          sz,
+        });
+        const a = puff(0, tr.h * 0.96, 0, tr.r * 1.12, tr.r * (acacia ? 0.48 : 0.95), tr.r * 1.05);
+        dummy.position.set(a.x, a.y, a.z);
+        dummy.scale.set(a.sx, a.sy, a.sz);
+        dummy.updateMatrix();
+        treeCanopyARef.current!.setMatrixAt(i, dummy.matrix);
+        treeCanopyARef.current!.setColorAt(i, tr.color);
 
-      dummy.position.set(tr.x - tr.r * 0.44, tr.h * 0.86, tr.z - tr.r * 0.36);
-      dummy.scale.set(tr.r * 0.72, tr.r * 0.72, tr.r * 0.72);
-      dummy.updateMatrix();
-      treeCanopyCRef.current!.setMatrixAt(i, dummy.matrix);
-      treeCanopyCRef.current!.setColorAt(i, tr.color);
+        const b = puff(tr.r * 0.48, tr.h * 0.84, tr.r * 0.35, tr.r * 0.8, tr.r * (acacia ? 0.4 : 0.75), tr.r * 0.78);
+        dummy.position.set(b.x, b.y, b.z);
+        dummy.scale.set(b.sx, b.sy, b.sz);
+        dummy.updateMatrix();
+        treeCanopyBRef.current!.setMatrixAt(i, dummy.matrix);
+        treeCanopyBRef.current!.setColorAt(i, tr.color);
+
+        const c = puff(-tr.r * 0.44, tr.h * 0.86, -tr.r * 0.36, tr.r * 0.74, tr.r * (acacia ? 0.38 : 0.72), tr.r * 0.72);
+        dummy.position.set(c.x, c.y, c.z);
+        dummy.scale.set(c.sx, c.sy, c.sz);
+        dummy.updateMatrix();
+        treeCanopyCRef.current!.setMatrixAt(i, dummy.matrix);
+        treeCanopyCRef.current!.setColorAt(i, tr.color);
+      }
     });
 
     treeTrunkRef.current.instanceMatrix.needsUpdate = true;
     treeCanopyARef.current.instanceMatrix.needsUpdate = true;
     treeCanopyBRef.current.instanceMatrix.needsUpdate = true;
     treeCanopyCRef.current.instanceMatrix.needsUpdate = true;
+    treeConeRef.current.instanceMatrix.needsUpdate = true;
     if (treeCanopyARef.current.instanceColor) treeCanopyARef.current.instanceColor.needsUpdate = true;
     if (treeCanopyBRef.current.instanceColor) treeCanopyBRef.current.instanceColor.needsUpdate = true;
     if (treeCanopyCRef.current.instanceColor) treeCanopyCRef.current.instanceColor.needsUpdate = true;
-  }, [trees, dummy]);
+    if (treeConeRef.current.instanceColor) treeConeRef.current.instanceColor.needsUpdate = true;
+  }, [trees, dummy, hiddenMatrix]);
 
   // Rocky / pebble stone riverbanks hugging both sides of the winding Veridia River
   const riverPebbles = useMemo(() => {
@@ -953,7 +1065,7 @@ const DioramaWorldScene: React.FC<
       for (let cl = 0; cl < 4; cl++) {
         const cx = a.x + (seededNoise(cIdx * 31 + cl * 7) - 0.5) * 1200;
         const cz = a.z + (seededNoise(cIdx * 43 + cl * 11) - 0.5) * 1200;
-        const cy = 340 + (cl % 3) * 65 + seededNoise(cIdx * 17 + cl) * 40;
+        const cy = 760 + (cl % 3) * 70 + seededNoise(cIdx * 17 + cl) * 45;
         const driftSpeed = 10 + (cl % 3) * 4.5;
         const phase = cIdx * 1.4 + cl * 2.1;
         // 6 overlapping puffs per cloud
@@ -1009,9 +1121,20 @@ const DioramaWorldScene: React.FC<
     return waves;
   }, []);
 
-  // 160 moving vehicles: yellow taxis, red city buses, and colorful sedans
+  // Traffic lanes are generated from the exact same curved centerlines that are rendered.
+  const { highwayRoutes, cityRoutes } = useMemo(() => {
+    const primaryRoads = worldLayout.roads.filter((road) => road.kind !== "access");
+    const highway: typeof worldLayout.trafficRoutes = [];
+    const city: typeof worldLayout.trafficRoutes = [];
+    worldLayout.trafficRoutes.forEach((route, index) => {
+      if (primaryRoads[index]?.kind === "highway") highway.push(route);
+      else city.push(route);
+    });
+    return { highwayRoutes: highway, cityRoutes: city };
+  }, [worldLayout]);
+
+  // 160 detailed vehicles: yellow taxis, red city buses, and colorful sedans.
   const vehicles = useMemo(() => {
-    const ids = Object.keys(COUNTRY_FLAT_ANCHORS);
     return Array.from({ length: 160 }, (_, i) => {
       const kind: "taxi" | "bus" | "sedan" =
         i % 5 === 0 ? "taxi" : i % 8 === 0 ? "bus" : "sedan";
@@ -1021,50 +1144,26 @@ const DioramaWorldScene: React.FC<
           : kind === "bus"
           ? "#dc2626"
           : SEDAN_COLORS[i % SEDAN_COLORS.length];
-
-      if (i < 58) {
-        const [fromId, toId] = HIGHWAY_LINKS[i % HIGHWAY_LINKS.length];
-        return {
-          mode: "highway" as const,
-          kind,
-          a: COUNTRY_FLAT_ANCHORS[fromId],
-          b: COUNTRY_FLAT_ANCHORS[toId],
-          axis: "x" as const,
-          dir: 1 as const,
-          speed: kind === "bus" ? 0.015 : 0.02 + (i % 5) * 0.004,
-          phase: (i * 0.17) % 1,
-          laneOffset: i % 2 === 0 ? 7.5 : -7.5,
-          color: new THREE.Color(colorHex),
-          cabinColor: new THREE.Color(kind === "bus" ? "#e0f2fe" : kind === "taxi" ? "#fef08a" : "#dbeafe"),
-        };
-      }
-
-      const anchor = COUNTRY_FLAT_ANCHORS[ids[i % ids.length]];
+      const path = i < 58
+        ? highwayRoutes[i % highwayRoutes.length]
+        : cityRoutes[(i - 58) % cityRoutes.length];
       return {
-        mode: "city" as const,
         kind,
-        a: anchor,
-        b: anchor,
-        axis: i % 2 === 0 ? ("x" as const) : ("z" as const),
-        dir: i % 4 < 2 ? (1 as const) : (-1 as const),
-        speed: kind === "bus" ? 36 : 48 + (i % 4) * 14,
-        phase: (i * 97) % 1300,
-        laneOffset: 7.5,
+        path,
+        distance: ((i * 0.173 + 0.07) % 1) * path.total,
+        speed: i < 58
+          ? kind === "bus" ? 19 + (i % 4) : 25 + (i % 5) * 2.2
+          : kind === "bus" ? 11 + (i % 3) : 14 + (i % 4) * 2.5,
+        yaw: 0,
         color: new THREE.Color(colorHex),
-        cabinColor: new THREE.Color(kind === "bus" ? "#e0f2fe" : kind === "taxi" ? "#fef08a" : "#dbeafe"),
       };
     });
-  }, []);
+  }, [highwayRoutes, cityRoutes]);
 
   useEffect(() => {
-    if (carBodyRef.current && carCabinRef.current) {
-      vehicles.forEach((v, i) => {
-        carBodyRef.current!.setColorAt(i, v.color);
-        carCabinRef.current!.setColorAt(i, v.cabinColor);
-      });
-      if (carBodyRef.current.instanceColor) carBodyRef.current.instanceColor.needsUpdate = true;
-      if (carCabinRef.current.instanceColor) carCabinRef.current.instanceColor.needsUpdate = true;
-    }
+    if (!carBodyRef.current) return;
+    vehicles.forEach((vehicle, i) => carBodyRef.current!.setColorAt(i, vehicle.color));
+    if (carBodyRef.current.instanceColor) carBodyRef.current.instanceColor.needsUpdate = true;
   }, [vehicles]);
 
   // Animated coastal harbor commuter ferries
@@ -1081,6 +1180,63 @@ const DioramaWorldScene: React.FC<
   const countryById = useMemo(
     () => Object.fromEntries(countries.map((c) => [c.country_id, c])),
     [countries]
+  );
+
+  const hospitalPlacements = useMemo(() => {
+    const requests = allHospitals.map((hospital) => {
+      const [x, z] = geoToFlatWorld(
+        hospital.location.lat,
+        hospital.location.lon,
+        countryById[hospital.country_id]
+      );
+      return { id: hospital.hospital_id as string, countryId: hospital.country_id as string, x, z };
+    });
+    return assignHospitalPads(worldLayout, requests);
+  }, [allHospitals, countryById, worldLayout]);
+  const shelterPlacements = useMemo(() => {
+    const requests = allShelters.map((shelter) => {
+      const [x, z] = geoToFlatWorld(
+        shelter.location.lat,
+        shelter.location.lon,
+        countryById[shelter.country_id]
+      );
+      return { id: shelter.shelter_id as string, countryId: shelter.country_id as string, x, z };
+    });
+    return assignShelterPads(worldLayout, requests);
+  }, [allShelters, countryById, worldLayout]);
+  const ambulanceParking = useMemo(() => {
+    const requests = allAmbulances
+      .filter((ambulance) => ambulance.status === "AVAILABLE")
+      .map((ambulance) => {
+        const [x, z] = geoToFlatWorld(
+          ambulance.location.lat,
+          ambulance.location.lon,
+          countryById[ambulance.country_id]
+        );
+        return { id: ambulance.ambulance_id as string, countryId: ambulance.country_id as string, x, z };
+      });
+    return assignRoadsideSpots(worldLayout, requests, "ambulance", layoutBuildings, layoutTrees);
+  }, [allAmbulances, countryById, worldLayout, layoutBuildings, layoutTrees]);
+  const fireParking = useMemo(() => {
+    const requests = allFireUnits
+      .filter((unit) => unit.status === "AVAILABLE")
+      .map((unit) => {
+        const [x, z] = geoToFlatWorld(
+          unit.location.lat,
+          unit.location.lon,
+          countryById[unit.country_id]
+        );
+        return { id: unit.unit_id as string, countryId: unit.country_id as string, x, z };
+      });
+    return assignRoadsideSpots(worldLayout, requests, "fire", layoutBuildings, layoutTrees);
+  }, [allFireUnits, countryById, worldLayout, layoutBuildings, layoutTrees]);
+
+  const usedAccessRoadIds = useMemo(
+    () => new Set([
+      ...[...hospitalPlacements.values()].map((pad) => pad.accessRoad.id),
+      ...[...shelterPlacements.values()].map((pad) => pad.accessRoad.id),
+    ]),
+    [hospitalPlacements, shelterPlacements]
   );
 
   // Precompute drone anchors from real backend telemetry
@@ -1176,54 +1332,35 @@ const DioramaWorldScene: React.FC<
       });
     }
 
-    // 160 moving diorama vehicles (yellow taxis, red city buses, colorful sedans)
-    if (carBodyRef.current && carCabinRef.current) {
-      vehicles.forEach((v, i) => {
-        let vx = 0;
-        let vz = 0;
-        let yaw = 0;
+    // Detailed vehicles advance by real distance along closed lane paths.
+    if (carBodyRef.current && carCabinRef.current && carWheelRef.current) {
+      vehicles.forEach((vehicle, i) => {
+        vehicle.distance = (vehicle.distance + vehicle.speed * dt) % vehicle.path.total;
+        const sample = sampleTrafficPath(vehicle.path, vehicle.distance);
+        const yawDelta = Math.atan2(Math.sin(sample.yaw - vehicle.yaw), Math.cos(sample.yaw - vehicle.yaw));
+        vehicle.yaw += yawDelta * (1 - Math.exp(-dt * 9));
+        const isBus = vehicle.kind === "bus";
 
-        if (v.mode === "highway") {
-          const u = (v.phase + t * v.speed) % 1;
-          const dx = v.b.x - v.a.x;
-          const dz = v.b.z - v.a.z;
-          const len = Math.hypot(dx, dz) || 1;
-          const nx = -dz / len;
-          const nz = dx / len;
-          vx = THREE.MathUtils.lerp(v.a.x, v.b.x, u) + nx * v.laneOffset;
-          vz = THREE.MathUtils.lerp(v.a.z, v.b.z, u) + nz * v.laneOffset;
-          yaw = Math.atan2(dx, dz);
-        } else {
-          const span = ((v.phase + t * v.speed * v.dir + 4900) % 1400) - 700;
-          vx = v.axis === "x" ? v.a.x + span : v.a.x + v.dir * v.laneOffset;
-          vz = v.axis === "z" ? v.a.z + span : v.a.z + v.dir * v.laneOffset;
-          yaw = v.axis === "x" ? (v.dir === 1 ? Math.PI / 2 : -Math.PI / 2) : v.dir === 1 ? 0 : Math.PI;
-        }
-
-        const isBus = v.kind === "bus";
-        const bw = isBus ? 6.2 : 5.2;
-        const bh = isBus ? 5.6 : 2.8;
-        const bl = isBus ? 18.5 : 11.4;
-
-        // Main lower body
-        dummy.position.set(vx, 0.8 + bh / 2, vz);
-        dummy.rotation.set(0, yaw, 0);
-        dummy.scale.set(bw, bh, bl);
+        dummy.position.set(sample.x, 0.72, sample.z);
+        dummy.rotation.set(0, vehicle.yaw, 0);
+        dummy.scale.set(isBus ? 1.16 : 1, isBus ? 1.08 : 1, isBus ? 1.62 : 1);
         dummy.updateMatrix();
+
         carBodyRef.current!.setMatrixAt(i, dummy.matrix);
-
-        // Upper cabin / roof
-        const cw = bw * 0.86;
-        const ch = isBus ? 1.8 : 2.0;
-        const cl = isBus ? bl * 0.92 : bl * 0.54;
-        dummy.position.set(vx, 0.8 + bh + ch / 2 - 0.15, vz);
-        dummy.rotation.set(0, yaw, 0);
-        dummy.scale.set(cw, ch, cl);
-        dummy.updateMatrix();
         carCabinRef.current!.setMatrixAt(i, dummy.matrix);
+        carWheelRef.current!.setMatrixAt(i, dummy.matrix);
+        carFrontLightRef.current?.setMatrixAt(i, dummy.matrix);
+        carRearLightRef.current?.setMatrixAt(i, dummy.matrix);
       });
-      carBodyRef.current.instanceMatrix.needsUpdate = true;
-      carCabinRef.current.instanceMatrix.needsUpdate = true;
+      [
+        carBodyRef.current,
+        carCabinRef.current,
+        carWheelRef.current,
+        carFrontLightRef.current,
+        carRearLightRef.current,
+      ].forEach((mesh) => {
+        if (mesh) mesh.instanceMatrix.needsUpdate = true;
+      });
     }
   });
 
@@ -1241,7 +1378,7 @@ const DioramaWorldScene: React.FC<
   }, []);
 
   const activeAnchor = COUNTRY_FLAT_ANCHORS[selectedCountryId] || { x: 0, z: 0 };
-  const shadowRes = quality === "high" ? 2048 : 1024;
+  const shadowRes = quality === "high" ? 4096 : 2048;
 
   return (
     <>
@@ -1307,12 +1444,14 @@ const DioramaWorldScene: React.FC<
 
       {/* Sunlit Azure Ocean Base */}
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -2.5, 0]} receiveShadow>
-        <planeGeometry args={[20000, 20000]} />
-        <meshStandardMaterial
+        <planeGeometry args={[20000, 20000, 64, 64]} />
+        <meshPhysicalMaterial
           map={textures.water}
           color={dayMode ? "#56b1e6" : "#153657"}
-          roughness={0.22}
-          metalness={0.18}
+          roughness={0.16}
+          metalness={0.24}
+          clearcoat={0.75}
+          clearcoatRoughness={0.12}
         />
       </mesh>
 
@@ -1322,7 +1461,7 @@ const DioramaWorldScene: React.FC<
         <meshStandardMaterial color={dayMode ? "#c8b297" : "#272e3a"} roughness={0.92} />
       </mesh>
       <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.05, 0]} receiveShadow>
-        <planeGeometry args={[9600, 9600]} />
+        <planeGeometry args={[9600, 9600, 128, 128]} />
         <meshStandardMaterial color={dayMode ? "#87b97c" : "#1c2a24"} roughness={0.94} />
       </mesh>
 
@@ -1343,7 +1482,7 @@ const DioramaWorldScene: React.FC<
         castShadow
         receiveShadow
       >
-        <dodecahedronGeometry args={[1, 0]} />
+        <dodecahedronGeometry args={[1, quality === "high" ? 1 : 0]} />
         <meshStandardMaterial roughness={0.92} />
       </instancedMesh>
 
@@ -1393,7 +1532,7 @@ const DioramaWorldScene: React.FC<
 
       {/* Fluffy Stylized Multi-Sphere White Clouds Drifting Above Cities */}
       <instancedMesh ref={cloudPuffRef} args={[undefined, undefined, cloudPuffs.length]}>
-        <sphereGeometry args={[1, 10, 8]} />
+        <sphereGeometry args={[1, quality === "high" ? 18 : 10, quality === "high" ? 12 : 8]} />
         <meshStandardMaterial
           color={isGolden ? "#fff2e0" : dayMode ? "#ffffff" : "#334155"}
           roughness={0.95}
@@ -1447,106 +1586,37 @@ const DioramaWorldScene: React.FC<
       {/* 7 Country Sectors, Boulevards, Zebra Crosswalks, Central Parks, Iconic Landmarks & Nameplates */}
       {countries.map((c, cIdx) => {
         const a = COUNTRY_FLAT_ANCHORS[c.country_id];
-        if (!a) return null;
+        const layout = worldLayout.countries[c.country_id];
+        if (!a || !layout) return null;
         const isSel = c.country_id === selectedCountryId;
-        const ringPts: [number, number, number][] = Array.from({ length: 33 }, (_, i) => {
-          const ang = (i / 32) * Math.PI * 2;
-          return [a.x + Math.cos(ang) * a.radius, 1.6, a.z + Math.sin(ang) * a.radius];
-        });
-
-        const parkX = a.x + 215;
-        const parkZ = a.z + 215;
+        const ringPts: [number, number, number][] = layout.boundary.points.map((point) => [point.x, 1.6, point.z]);
 
         return (
           <group key={c.country_id}>
-            {/* Country Biome Ground Sector */}
-            <mesh
-              rotation={[-Math.PI / 2, 0, 0]}
-              position={[a.x, 0.22, a.z]}
-              receiveShadow
-              onClick={(e) => {
-                e.stopPropagation();
-                onSelectCountry(c.country_id);
-              }}
-            >
-              <circleGeometry args={[a.radius, 40]} />
-              <meshStandardMaterial
-                color={dayMode ? a.ground : "#243038"}
-                roughness={0.93}
-              />
-            </mesh>
+            <CountryGround
+              shape={layout.boundary}
+              color={dayMode ? a.ground : "#243038"}
+              onSelect={() => onSelectCountry(c.country_id)}
+            />
 
-            {/* Clean Urban Diorama Plaza Apron in City Center */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.34, a.z]} receiveShadow>
-              <circleGeometry args={[430, 32]} />
-              <meshStandardMaterial color={dayMode ? "#d8dde3" : "#273242"} roughness={0.88} />
-            </mesh>
-
-            {/* Country Border Outline */}
             <Line
               points={ringPts}
               color={isSel ? "#0284c7" : c.color}
               lineWidth={isSel ? 3.0 : 1.4}
+              raycast={noRaycast}
             />
 
-            {/* 4-Lane Cross-City Asphalt Boulevards */}
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.62, a.z]} receiveShadow>
-              <planeGeometry args={[1650, 38]} />
-              <meshStandardMaterial map={textures.asphalt} roughness={0.84} />
-            </mesh>
-            <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.64, a.z]} receiveShadow>
-              <planeGeometry args={[38, 1650]} />
-              <meshStandardMaterial map={textures.asphalt} roughness={0.84} />
-            </mesh>
-
-            {/* White Zebra Crosswalks at Main Intersections & Mid-Block Crossings */}
-            {[-280, -34, 34, 280].map((offset, cwIdx) => (
-              <React.Fragment key={cwIdx}>
-                <mesh
-                  rotation={[-Math.PI / 2, 0, Math.PI / 2]}
-                  position={[a.x + offset, 0.7, a.z]}
-                >
-                  <planeGeometry args={[30, 12]} />
-                  <meshStandardMaterial map={textures.crosswalk} transparent roughness={0.75} />
-                </mesh>
-                <mesh rotation={[-Math.PI / 2, 0, 0]} position={[a.x, 0.7, a.z + offset]}>
-                  <planeGeometry args={[30, 12]} />
-                  <meshStandardMaterial map={textures.crosswalk} transparent roughness={0.75} />
-                </mesh>
-              </React.Fragment>
-            ))}
-
-            {/* Green Central Park with Winding Blue Pond & Walking Path */}
-            <group position={[parkX, 0.48, parkZ]}>
-              <mesh rotation={[-Math.PI / 2, 0, 0]} receiveShadow>
-                <circleGeometry args={[136, 28]} />
-                <meshStandardMaterial color={dayMode ? "#78be62" : "#1e4228"} roughness={0.92} />
-              </mesh>
-              {/* Sandy park path ring */}
-              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.08, 0]}>
-                <ringGeometry args={[76, 86, 32]} />
-                <meshStandardMaterial color={dayMode ? "#e5d5bc" : "#4b463d"} roughness={0.9} />
-              </mesh>
-              {/* Winding blue pond (multi-lobe organic pool) */}
-              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[-12, 0.14, -8]}>
-                <circleGeometry args={[42, 22]} />
-                <meshStandardMaterial color="#3bb6e6" roughness={0.14} metalness={0.22} />
-              </mesh>
-              <mesh rotation={[-Math.PI / 2, 0, 0]} position={[24, 0.14, 16]}>
-                <circleGeometry args={[32, 20]} />
-                <meshStandardMaterial color="#3bb6e6" roughness={0.14} metalness={0.22} />
-              </mesh>
-            </group>
+            <HubMesh shape={layout.hub} dayMode={dayMode} asphalt={textures.asphalt} />
 
             {/* Iconic Architectural Landmarks in Each City */}
             <ArtDecoSkyscraper
               position={[a.x - 110, 0, a.z - 105]}
-              scale={c.country_id === "COUNTRY-03" || c.country_id === "COUNTRY-01" ? 1.15 : 0.88}
+              scale={c.country_id === "COUNTRY-03" || c.country_id === "COUNTRY-01" ? 1.75 : 1.45}
               facadeTex={textures.artDeco}
             />
             <TaperedGlassTower
               position={[a.x + 108, 0, a.z - 115]}
-              scale={c.country_id === "COUNTRY-03" || c.country_id === "COUNTRY-01" ? 1.12 : 0.85}
+              scale={c.country_id === "COUNTRY-03" || c.country_id === "COUNTRY-01" ? 1.72 : 1.42}
               glassTex={textures.blueGlass}
             />
             <ElevatedWaterTower position={[a.x - 245, 0, a.z + 185]} />
@@ -1555,17 +1625,17 @@ const DioramaWorldScene: React.FC<
             {/* Stylized Snow-Capped Mountain Peaks in Valtoria Highlands (COUNTRY-02) */}
             {c.country_id === "COUNTRY-02" &&
               [
-                [-560, -520, 420],
-                [580, -480, 470],
-                [0, -760, 540],
+                [-560, -520, 560],
+                [580, -480, 620],
+                [0, -760, 680],
               ].map(([ox, oz, h], idx) => (
                 <group key={idx} position={[a.x + ox, 0, a.z + oz]}>
                   <mesh position={[0, h / 2, 0]} castShadow receiveShadow>
-                    <coneGeometry args={[350, h, 8]} />
+                    <coneGeometry args={[440, h, quality === "high" ? 32 : 12]} />
                     <meshStandardMaterial color="#8f9aa6" roughness={0.9} />
                   </mesh>
                   <mesh position={[0, h * 0.84, 0]}>
-                    <coneGeometry args={[112, h * 0.34, 8]} />
+                    <coneGeometry args={[112, h * 0.34, quality === "high" ? 28 : 12]} />
                     <meshStandardMaterial color="#f8fafc" roughness={0.8} />
                   </mesh>
                 </group>
@@ -1587,35 +1657,41 @@ const DioramaWorldScene: React.FC<
         );
       })}
 
-      {/* Inter-Country 4-Lane Transcontinental Highways */}
-      {HIGHWAY_LINKS.map(([idA, idB], idx) => {
-        const A = COUNTRY_FLAT_ANCHORS[idA];
-        const B = COUNTRY_FLAT_ANCHORS[idB];
-        const dx = B.x - A.x;
-        const dz = B.z - A.z;
-        const len = Math.hypot(dx, dz);
-        const angle = Math.atan2(dx, dz);
-        return (
-          <mesh
-            key={idx}
-            position={[(A.x + B.x) / 2, 0.54, (A.z + B.z) / 2]}
-            rotation={[-Math.PI / 2, 0, -angle]}
-            receiveShadow
-          >
-            <planeGeometry args={[34, len]} />
-            <meshStandardMaterial map={textures.asphalt} roughness={0.85} />
-          </mesh>
-        );
-      })}
+      <NaturalEnvironment world={worldLayout} dayMode={dayMode} quality={quality} />
+
+      {worldLayout.roads
+        .filter((road) => road.kind !== "access" || usedAccessRoadIds.has(road.id))
+        .map((road) => (
+          <RoadRibbon key={road.id} road={road} dayMode={dayMode} asphalt={textures.asphalt} />
+        ))}
+
+      {Object.values(worldLayout.countries).flatMap((country) =>
+        country.roads.flatMap((road) =>
+          [300, 620].map((distance) => (
+            <RoadCrosswalk
+              key={`${road.id}-crosswalk-${distance}`}
+              road={road}
+              distance={distance}
+              texture={textures.crosswalk}
+            />
+          ))
+        )
+      )}
+
+      <AmbientBirds
+        world={worldLayout}
+        quality={quality}
+        prefersReducedMotion={prefersReducedMotion}
+        dayMode={dayMode}
+      />
 
       {/* Instanced Commercial Towers & Warm Brick/Sandstone Mid-Rises */}
       <instancedMesh
         ref={commMeshRef}
-        args={[undefined, undefined, commBuildings.length]}
+        args={[buildingGeometry, undefined, commBuildings.length]}
         castShadow
         receiveShadow
       >
-        <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           map={textures.commercial}
           roughnessMap={textures.commRough}
@@ -1625,11 +1701,10 @@ const DioramaWorldScene: React.FC<
       </instancedMesh>
       <instancedMesh
         ref={resMeshRef}
-        args={[undefined, undefined, resBuildings.length]}
+        args={[buildingGeometry, undefined, resBuildings.length]}
         castShadow
         receiveShadow
       >
-        <boxGeometry args={[1, 1, 1]} />
         <meshStandardMaterial
           map={textures.residential}
           bumpMap={textures.resBump}
@@ -1641,51 +1716,109 @@ const DioramaWorldScene: React.FC<
 
       {/* Lush Instanced Multi-Sphere Tree Clusters (60 FPS) */}
       <instancedMesh ref={treeTrunkRef} args={[undefined, undefined, trees.length]} castShadow>
-        <cylinderGeometry args={[0.5, 0.72, 1, 6]} />
+        <cylinderGeometry args={[0.5, 0.72, 1, quality === "high" ? 12 : 6]} />
         <meshStandardMaterial color="#7c5c3e" roughness={0.95} />
       </instancedMesh>
       <instancedMesh ref={treeCanopyARef} args={[undefined, undefined, trees.length]} castShadow>
-        <sphereGeometry args={[1, 9, 7]} />
+        <sphereGeometry args={[1, quality === "high" ? 18 : 9, quality === "high" ? 12 : 7]} />
         <meshStandardMaterial roughness={0.85} />
       </instancedMesh>
       <instancedMesh ref={treeCanopyBRef} args={[undefined, undefined, trees.length]} castShadow>
-        <sphereGeometry args={[1, 8, 6]} />
+        <sphereGeometry args={[1, quality === "high" ? 16 : 8, quality === "high" ? 11 : 6]} />
         <meshStandardMaterial roughness={0.85} />
       </instancedMesh>
       <instancedMesh ref={treeCanopyCRef} args={[undefined, undefined, trees.length]} castShadow>
-        <sphereGeometry args={[1, 8, 6]} />
+        <sphereGeometry args={[1, quality === "high" ? 16 : 8, quality === "high" ? 11 : 6]} />
         <meshStandardMaterial roughness={0.85} />
       </instancedMesh>
-
-      {/* 160 Moving Diorama Vehicles (Yellow Taxis, Red City Buses, Colorful Sedans) */}
-      <instancedMesh ref={carBodyRef} args={[undefined, undefined, vehicles.length]} castShadow>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial roughness={0.32} metalness={0.35} />
+      <instancedMesh ref={treeConeRef} args={[undefined, undefined, trees.length]} castShadow>
+        <coneGeometry args={[1, 1, quality === "high" ? 10 : 6]} />
+        <meshStandardMaterial roughness={0.88} />
       </instancedMesh>
-      <instancedMesh ref={carCabinRef} args={[undefined, undefined, vehicles.length]} castShadow>
-        <boxGeometry args={[1, 1, 1]} />
-        <meshStandardMaterial roughness={0.22} metalness={0.42} />
+
+      {/* High-detail instanced vehicles: bevelled bodies, glass cabins, wheels and lights. */}
+      <instancedMesh ref={carBodyRef} args={[vehicleGeometry.body, undefined, vehicles.length]} castShadow receiveShadow>
+        <meshPhysicalMaterial roughness={0.24} metalness={0.42} clearcoat={0.9} clearcoatRoughness={0.18} />
+      </instancedMesh>
+      <instancedMesh ref={carCabinRef} args={[vehicleGeometry.cabin, undefined, vehicles.length]} castShadow>
+        <meshPhysicalMaterial color="#162033" roughness={0.12} metalness={0.48} clearcoat={1} clearcoatRoughness={0.08} />
+      </instancedMesh>
+      <instancedMesh ref={carWheelRef} args={[vehicleGeometry.wheels, undefined, vehicles.length]} castShadow>
+        <meshStandardMaterial color="#111318" roughness={0.72} metalness={0.12} />
+      </instancedMesh>
+      <instancedMesh ref={carFrontLightRef} args={[vehicleGeometry.frontLights, undefined, vehicles.length]}>
+        <meshStandardMaterial color="#f8fafc" emissive="#f8fafc" emissiveIntensity={2.2} toneMapped={false} />
+      </instancedMesh>
+      <instancedMesh ref={carRearLightRef} args={[vehicleGeometry.rearLights, undefined, vehicles.length]}>
+        <meshStandardMaterial color="#dc2626" emissive="#dc2626" emissiveIntensity={1.8} toneMapped={false} />
       </instancedMesh>
 
       {/* 220 Articulated Multi-Part Realistic NPCs */}
       <RealisticNPCs3D anchors={COUNTRY_FLAT_ANCHORS} hasActiveDisaster={hasActiveDisaster} />
 
-      {/* Live Backend Hospitals with Red Crosses */}
-      {allHospitals.map((h) => {
-        const [x, z] = geoToFlatWorld(h.location.lat, h.location.lon, countryById[h.country_id]);
+      {/* Live hospitals on reserved pads beside their access roads. */}
+      {allHospitals.map((hospital) => {
+        const pad = hospitalPlacements.get(hospital.hospital_id as string);
+        if (!pad) return null;
         return (
-          <group key={h.hospital_id} position={[x, 0, z]}>
-            <mesh position={[0, 22, 0]} castShadow receiveShadow>
-              <boxGeometry args={[48, 44, 38]} />
-              <meshStandardMaterial color="#ffffff" roughness={0.42} />
+          <group
+            key={hospital.hospital_id}
+            position={[pad.x, 0, pad.z]}
+            rotation={[0, pad.rotationY, 0]}
+          >
+            <mesh position={[0, 0.62, 0]} receiveShadow>
+              <boxGeometry args={[112, 2, 96]} />
+              <meshStandardMaterial color="#c8ced3" roughness={0.9} />
             </mesh>
-            <mesh position={[0, 45, 0]}>
-              <boxGeometry args={[22, 1.8, 6.5]} />
+            {[-34, -12, 12, 34].map((x) => (
+              <mesh key={x} position={[x, 1.66, 39]} raycast={noRaycast}>
+                <boxGeometry args={[1.1, 0.18, 15]} />
+                <meshStandardMaterial color="#f8fafc" roughness={0.8} />
+              </mesh>
+            ))}
+            <mesh position={[0, 38, 0]} castShadow receiveShadow>
+              <boxGeometry args={[84, 76, 66]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.38} />
+            </mesh>
+            {[-33.2, 33.2].map((z) => (
+              <mesh key={z} position={[0, 43, z]}>
+                <boxGeometry args={[68, 11, 1.2]} />
+                <meshStandardMaterial color="#5f7f96" metalness={0.28} roughness={0.24} />
+              </mesh>
+            ))}
+            {[-42.2, 42.2].map((x) => (
+              <mesh key={x} position={[x, 43, 0]}>
+                <boxGeometry args={[1.2, 11, 52]} />
+                <meshStandardMaterial color="#5f7f96" metalness={0.28} roughness={0.24} />
+              </mesh>
+            ))}
+            <mesh position={[0, 21, 38]} castShadow>
+              <boxGeometry args={[28, 3, 13]} />
+              <meshStandardMaterial color="#dbe4ea" metalness={0.18} roughness={0.4} />
+            </mesh>
+            <mesh position={[-19, 77.6, 0]}>
+              <boxGeometry args={[30, 2, 9]} />
               <meshStandardMaterial color="#dc2626" emissive="#dc2626" emissiveIntensity={0.65} />
             </mesh>
-            <mesh position={[0, 45, 0]}>
-              <boxGeometry args={[6.5, 1.8, 22]} />
+            <mesh position={[-19, 77.6, 0]}>
+              <boxGeometry args={[9, 2, 30]} />
               <meshStandardMaterial color="#dc2626" emissive="#dc2626" emissiveIntensity={0.65} />
+            </mesh>
+            <mesh position={[22, 77.35, -3]} rotation={[-Math.PI / 2, 0, 0]}>
+              <circleGeometry args={[17, 28]} />
+              <meshStandardMaterial color="#4d7c59" roughness={0.86} />
+            </mesh>
+            <mesh position={[22, 77.55, -3]} rotation={[-Math.PI / 2, 0, 0]}>
+              <ringGeometry args={[13.5, 17, 28]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.75} />
+            </mesh>
+            <mesh position={[22, 77.7, -3]}>
+              <boxGeometry args={[11, 0.3, 2.2]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.75} />
+            </mesh>
+            <mesh position={[22, 77.7, -3]}>
+              <boxGeometry args={[2.2, 0.3, 11]} />
+              <meshStandardMaterial color="#f8fafc" roughness={0.75} />
             </mesh>
           </group>
         );
@@ -1693,10 +1826,17 @@ const DioramaWorldScene: React.FC<
 
       {/* Live Backend Ambulances */}
       {allAmbulances.map((a) => {
-        const [ax, az] = geoToFlatWorld(a.location.lat, a.location.lon, countryById[a.country_id]);
+        const spot = a.status === "AVAILABLE" ? ambulanceParking.get(a.ambulance_id as string) : undefined;
+        const [backendX, backendZ] = geoToFlatWorld(a.location.lat, a.location.lon, countryById[a.country_id]);
+        const ax = spot?.x ?? backendX;
+        const az = spot?.z ?? backendZ;
         const isActive = a.status !== "AVAILABLE";
         return (
-          <group key={a.ambulance_id} position={[ax, 3.6, az]}>
+          <group
+            key={a.ambulance_id}
+            position={[ax, 3.6, az]}
+            rotation={[0, spot?.rotationY ?? 0, 0]}
+          >
             <mesh castShadow>
               <boxGeometry args={[7.2, 5.2, 14.5]} />
               <meshStandardMaterial color="#ffffff" roughness={0.32} />
@@ -1719,10 +1859,17 @@ const DioramaWorldScene: React.FC<
 
       {/* Live Backend Fire & Rescue Units */}
       {allFireUnits.map((f) => {
-        const [fx, fz] = geoToFlatWorld(f.location.lat, f.location.lon, countryById[f.country_id]);
+        const spot = f.status === "AVAILABLE" ? fireParking.get(f.unit_id as string) : undefined;
+        const [backendX, backendZ] = geoToFlatWorld(f.location.lat, f.location.lon, countryById[f.country_id]);
+        const fx = spot?.x ?? backendX;
+        const fz = spot?.z ?? backendZ;
         const active = f.status === "ON_SCENE" || f.status === "DISPATCHED";
         return (
-          <group key={f.unit_id} position={[fx, 4.0, fz]}>
+          <group
+            key={f.unit_id}
+            position={[fx, 4.0, fz]}
+            rotation={[0, spot?.rotationY ?? 0, 0]}
+          >
             <mesh castShadow>
               <boxGeometry args={[7.6, 6.2, 16.5]} />
               <meshStandardMaterial color="#dc2626" roughness={0.38} />
@@ -1761,18 +1908,31 @@ const DioramaWorldScene: React.FC<
           );
         })}
 
-      {/* Live Backend Relief Shelters */}
-      {allShelters.map((s) => {
-        const [x, z] = geoToFlatWorld(s.location.lat, s.location.lon, countryById[s.country_id]);
+      {/* Relief shelters on separate accessible pads beside their access roads. */}
+      {allShelters.map((shelter) => {
+        const pad = shelterPlacements.get(shelter.shelter_id as string);
+        if (!pad) return null;
         return (
-          <group key={s.shelter_id} position={[x, 0, z]}>
-            <mesh position={[0, 9, 0]} castShadow>
-              <cylinderGeometry args={[16, 21, 18, 8]} />
+          <group
+            key={shelter.shelter_id}
+            position={[pad.x, 0, pad.z]}
+            rotation={[0, pad.rotationY, 0]}
+          >
+            <mesh position={[0, 0.6, 0]} receiveShadow>
+              <boxGeometry args={[88, 2, 76]} />
+              <meshStandardMaterial color="#c8ced3" roughness={0.9} />
+            </mesh>
+            <mesh position={[0, 17, 0]} castShadow receiveShadow>
+              <cylinderGeometry args={[30, 36, 32, 8]} />
               <meshStandardMaterial color="#0284c7" roughness={0.5} />
             </mesh>
-            <mesh position={[0, 19, 0]}>
-              <cylinderGeometry args={[12, 16, 3, 8]} />
+            <mesh position={[0, 34.5, 0]} castShadow>
+              <cylinderGeometry args={[22, 28, 4, 8]} />
               <meshStandardMaterial color="#f8fafc" roughness={0.4} />
+            </mesh>
+            <mesh position={[0, 20, 30.4]}>
+              <boxGeometry args={[13, 12, 1.2]} />
+              <meshStandardMaterial color="#e0f2fe" roughness={0.3} />
             </mesh>
           </group>
         );
@@ -1804,7 +1964,7 @@ const DioramaWorldScene: React.FC<
             <group key={d.drone_id} position={[info.x, y, info.z]}>
               {/* Quadcopter core chassis */}
               <mesh castShadow>
-                <octahedronGeometry args={[8.2, 0]} />
+                <octahedronGeometry args={[1.9, 0]} />
                 <meshStandardMaterial
                   color={color}
                   emissive={color}
@@ -1814,22 +1974,22 @@ const DioramaWorldScene: React.FC<
               </mesh>
               {/* Cross rotor arms */}
               <mesh position={[0, 1.5, 0]}>
-                <boxGeometry args={[23, 1.5, 2.2]} />
+                <boxGeometry args={[5.5, 0.36, 0.52]} />
                 <meshStandardMaterial color="#f1f5f9" metalness={0.65} roughness={0.25} />
               </mesh>
               <mesh position={[0, 1.5, 0]}>
-                <boxGeometry args={[2.2, 1.5, 23]} />
+                <boxGeometry args={[0.52, 0.36, 5.5]} />
                 <meshStandardMaterial color="#f1f5f9" metalness={0.65} roughness={0.25} />
               </mesh>
               {/* 4 Rotor guard rings */}
               {[
-                [-11, 0],
-                [11, 0],
-                [0, -11],
-                [0, 11],
+                [-2.6, 0],
+                [2.6, 0],
+                [0, -2.6],
+                [0, 2.6],
               ].map(([rx, rz], rIdx) => (
-                <mesh key={rIdx} position={[rx, 2.4, rz]} rotation={[-Math.PI / 2, 0, 0]}>
-                  <ringGeometry args={[3.2, 4.4, 12]} />
+                <mesh key={rIdx} position={[rx, 0.55, rz]} rotation={[-Math.PI / 2, 0, 0]}>
+                  <ringGeometry args={[0.75, 1.05, 12]} />
                   <meshBasicMaterial
                     color={isDestroyed ? "#ef4444" : "#334155"}
                     side={THREE.DoubleSide}
@@ -1985,7 +2145,7 @@ export const DioramaOpenWorld3D: React.FC<DioramaOpenWorldProps> = (props) => {
           onDecline={() => setQuality("low")}
           onIncline={() => { if (!urlLowQuality) setQuality("high"); }}
         />
-        <AdaptiveDpr pixelated />
+        <AdaptiveDpr />
         <DioramaWorldScene
           {...props}
           timeOfDay={timeOfDay}

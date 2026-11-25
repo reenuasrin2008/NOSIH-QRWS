@@ -163,6 +163,19 @@ COUNTRY_ARCHETYPES: List[Dict[str, Any]] = [
     },
 ]
 
+COUNTRY_HIGHWAY_LINKS: List[Tuple[str, str]] = [
+    ("COUNTRY-03", "COUNTRY-01"),
+    ("COUNTRY-03", "COUNTRY-02"),
+    ("COUNTRY-03", "COUNTRY-04"),
+    ("COUNTRY-03", "COUNTRY-05"),
+    ("COUNTRY-03", "COUNTRY-07"),
+    ("COUNTRY-02", "COUNTRY-06"),
+    ("COUNTRY-04", "COUNTRY-06"),
+    ("COUNTRY-04", "COUNTRY-05"),
+    ("COUNTRY-01", "COUNTRY-07"),
+]
+
+
 def _locked_read(method):
     """Serialize public world reads/serialization with the mutation lock."""
     @wraps(method)
@@ -463,6 +476,22 @@ class GlobalWorldEngine:
                             is_bridge=is_bridge,
                         )
 
+                    # District spokes join every sector to the city-center highway hub.
+                    for i, dist_id in enumerate(city_districts, start=1):
+                        district = self.districts[dist_id]
+                        rid = f"{city_id}-RD-SPOKE-{i:02d}"
+                        self.roads[rid] = RoadEdge(
+                            road_id=rid,
+                            country_id=cid,
+                            city_id=city_id,
+                            name=f"{cname} Central Connector {i}",
+                            category="main",
+                            start=city_center,
+                            end=district.center,
+                            length_km=round(max(0.8, haversine_km(city_center, district.center)), 2),
+                            speed_limit_kph=50.0,
+                        )
+
                     # Hospitals per city
                     h_count = 3 if is_cap else 1
                     for h_i in range(1, h_count + 1):
@@ -612,17 +641,46 @@ class GlobalWorldEngine:
                         capabilities=list(caps),
                     )
 
-            # Seed the default hackathon demonstration disaster in COUNTRY-03 (Veridia Basin)
-            self.inject_disaster(
-                country_id="COUNTRY-03",
-                disaster_type=DisasterType.CYCLONE,
-                name="Cyclone Varuna — Veridia River Basin",
-                severity=0.78,
-                radius_km=12.0,
-                wind_kph=118.0,
-                rainfall_mm_hr=68.0,
-            )
+            # Inter-city highways join every city to its country's capital hub.
+            for cid, country in self.countries.items():
+                city_ids = [city_id for city_id, city in self.cities.items() if city.country_id == cid]
+                for i in range(len(city_ids) - 1):
+                    source = self.cities[city_ids[i]]
+                    target = self.cities[city_ids[i + 1]]
+                    rid = f"{cid}-HW-{i + 1:02d}"
+                    self.roads[rid] = RoadEdge(
+                        road_id=rid,
+                        country_id=cid,
+                        city_id=source.city_id,
+                        name=f"{country.name} Inter-City Highway {i + 1}",
+                        category="highway",
+                        start=source.center,
+                        end=target.center,
+                        length_km=round(max(1.0, haversine_km(source.center, target.center)), 2),
+                        speed_limit_kph=110.0,
+                        capacity_vph=2400,
+                    )
 
+            # Cross-border highways make all seven national networks one connected graph.
+            for i, (source_id, target_id) in enumerate(COUNTRY_HIGHWAY_LINKS, start=1):
+                source = self.countries[source_id]
+                target = self.countries[target_id]
+                rid = f"XBW-{source_id[-2:]}-{target_id[-2:]}"
+                self.roads[rid] = RoadEdge(
+                    road_id=rid,
+                    country_id=source_id,
+                    city_id=source.capital_city_id,
+                    name=f"{source.name} ↔ {target.name} Cross-Border Highway",
+                    category="highway",
+                    start=source.center,
+                    end=target.center,
+                    length_km=round(max(1.0, haversine_km(source.center, target.center)), 2),
+                    speed_limit_kph=120.0,
+                    capacity_vph=2800,
+                )
+
+            # Start from a clean, alert-free world. Disasters can still be injected
+            # manually or through the Demo Director scenarios.
             self.event_bus.emit(
                 "world.initialized",
                 payload={"scenario_id": self.scenario_id, "countries": len(self.countries), "drones": len(self.drones)},

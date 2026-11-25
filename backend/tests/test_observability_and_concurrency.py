@@ -145,6 +145,7 @@ class TestObservabilityAndConcurrency(unittest.TestCase):
         self.assertIsInstance(world._mutation_lock, type(threading.RLock()))
 
         errors: list[Exception] = []
+        initial_disaster_count = len(world.disasters)
         country_ids = list(world.countries.keys())
         disaster_types = [DisasterType.FLOOD, DisasterType.FIRE, DisasterType.CYCLONE, DisasterType.LANDSLIDE]
 
@@ -172,8 +173,8 @@ class TestObservabilityAndConcurrency(unittest.TestCase):
                     errors.append(exc)
 
         self.assertEqual(errors, [])
-        # 1 initial seeded cyclone + 40 injected disasters (+ any secondary flood cascades)
-        self.assertGreaterEqual(len(world.disasters), 41)
+        # 40 injected disasters (+ any secondary flood cascades) from a clean seed.
+        self.assertGreaterEqual(len(world.disasters), initial_disaster_count + 40)
         self.assertEqual(len(world.countries), 7)
         self.assertEqual(len(world.drones), 98)
 

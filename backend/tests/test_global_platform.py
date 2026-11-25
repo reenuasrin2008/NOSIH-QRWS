@@ -159,6 +159,34 @@ class TestQuantumRescueGlobalPlatform(unittest.TestCase):
         self.assertEqual(r_exp.status_code, 200)
         self.assertEqual(len(list(Path(".").glob("*.db"))), 0)
 
+    def test_13_road_network_connectivity(self) -> None:
+        world = global_services.world
+        parent: dict[tuple[float, float], tuple[float, float]] = {}
+
+        def node(point: GeoPoint) -> tuple[float, float]:
+            return (round(point.lat, 5), round(point.lon, 5))
+
+        def find(item: tuple[float, float]) -> tuple[float, float]:
+            parent.setdefault(item, item)
+            if parent[item] != item:
+                parent[item] = find(parent[item])
+            return parent[item]
+
+        def union(a: tuple[float, float], b: tuple[float, float]) -> None:
+            root_a, root_b = find(a), find(b)
+            if root_a != root_b:
+                parent[root_b] = root_a
+
+        for road in world.roads.values():
+            union(node(road.start), node(road.end))
+
+        district_nodes = [node(district.center) for district in world.districts.values()]
+        city_nodes = [node(city.center) for city in world.cities.values()]
+        self.assertGreaterEqual(len(world.roads), 135)
+        self.assertEqual(len({find(item) for item in district_nodes}), 1)
+        self.assertEqual(len({find(item) for item in city_nodes}), 1)
+        self.assertTrue(any(road.road_id.startswith("XBW-") for road in world.roads.values()))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   Check,
   ChevronDown,
@@ -25,6 +27,7 @@ import {
 } from "lucide-react";
 import { TacticalFlatWorldMap } from "../components/map/TacticalFlatWorldMap";
 import { JarvisNeuralCore3D } from "../components/jarvis/JarvisNeuralCore3D";
+import { DemoDirector } from "./DemoDirector";
 import { connectGlobalWebSocket, globalApi } from "../shared/globalApi";
 import type {
   ApprovalItem,
@@ -113,6 +116,7 @@ export const JarvisCommandApp: React.FC = () => {
   const [stageMode, setStageMode] = useState<"fullscreen" | "split">("fullscreen");
   // Bottom Pop-Up Dock Drawer
   const [activeDock, setActiveDock] = useState<DockTab>(null);
+  const [dockMenuOpen, setDockMenuOpen] = useState(false);
 
   // Voice & Web Audio API state
   const [voiceMode, setVoiceMode] = useState<"ptt" | "continuous" | "text">("ptt");
@@ -147,6 +151,10 @@ export const JarvisCommandApp: React.FC = () => {
 
   const recognitionRef = useRef<any>(null);
   const voiceEnabledRef = useRef(false);
+  const voiceRequestedRef = useRef(false);
+  const voiceStartingRef = useRef(false);
+  const loadingRef = useRef(false);
+  const speakingRef = useRef(false);
   const micStreamRef = useRef<MediaStream | null>(null);
   const rafRef = useRef<number | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -309,6 +317,7 @@ export const JarvisCommandApp: React.FC = () => {
       }
       cleanupAudioPipeline();
       voiceEnabledRef.current = false;
+      voiceRequestedRef.current = false;
       if (speakWaveRafRef.current !== null) {
         cancelAnimationFrame(speakWaveRafRef.current);
         speakWaveRafRef.current = null;
@@ -357,41 +366,112 @@ export const JarvisCommandApp: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  const autoSpeakRef = useRef(autoSpeak);
+  const voiceRateRef = useRef(voiceRate);
+  const voiceVolumeRef = useRef(voiceVolume);
+  const voicesRef = useRef(voices);
+  const selectedVoiceNameRef = useRef(selectedVoiceName);
+  autoSpeakRef.current = autoSpeak;
+  voiceRateRef.current = voiceRate;
+  voiceVolumeRef.current = voiceVolume;
+  voicesRef.current = voices;
+  selectedVoiceNameRef.current = selectedVoiceName;
+
+  const speechQueueIdRef = useRef(0);
+
+  const sanitizeForSpeech = (raw: string): string =>
+    raw
+      .replace(/```[\s\S]*?```/g, " Code block omitted. ")
+      .replace(/\|[^\n]+\|/g, " ")
+      .replace(/[#*_`~>]/g, "")
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const splitSpeechChunks = (text: string, maxLen = 160): string[] => {
+    const sentences = text.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [text];
+    const chunks: string[] = [];
+    let current = "";
+    for (const s of sentences) {
+      const part = s.trim();
+      if (!part) continue;
+      if ((current + " " + part).trim().length <= maxLen) {
+        current = (current + " " + part).trim();
+      } else {
+        if (current) chunks.push(current);
+        current = part;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  };
+
   const stopSpeaking = () => {
+    speechQueueIdRef.current += 1;
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
     }
+    speakingRef.current = false;
     setSpeaking(false);
   };
 
-  const speakText = (text: string) => {
+  const speakText = (rawText: string, fallbackText?: string) => {
     if (
-      !autoSpeak ||
-      voiceMode === "text" ||
+      !autoSpeakRef.current ||
+      voiceModeRef.current === "text" ||
       typeof window === "undefined" ||
       !("speechSynthesis" in window)
     ) {
       return;
     }
+    const clean = sanitizeForSpeech(rawText || fallbackText || "");
+    if (!clean) return;
+
     stopSpeaking();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate = voiceRate;
-    u.volume = voiceVolume;
-    const chosen = voices.find((v) => v.name === selectedVoiceName);
-    if (chosen) u.voice = chosen;
-    u.onstart = () => setSpeaking(true);
-    u.onend = () => {
-      if (!isMountedRef.current) return;
+    const queueId = speechQueueIdRef.current;
+    const chunks = splitSpeechChunks(clean, 160);
+    const chosen =
+      voicesRef.current.find((v) => v.name === selectedVoiceNameRef.current) ||
+      voicesRef.current.find((v) => /^en/i.test(v.lang)) ||
+      null;
+
+    const finishQueue = () => {
+      if (!isMountedRef.current || speechQueueIdRef.current !== queueId) return;
+      speakingRef.current = false;
       setSpeaking(false);
-      if (voiceModeRef.current === "continuous") startVoiceRecognition();
+      if (voiceModeRef.current === "continuous" && voiceRequestedRef.current && !loadingRef.current) {
+        window.setTimeout(() => void startVoiceRecognition(), 250);
+      }
     };
-    u.onerror = () => setSpeaking(false);
-    window.speechSynthesis.speak(u);
+
+    const speakChunk = (idx: number) => {
+      if (!isMountedRef.current || speechQueueIdRef.current !== queueId) return;
+      if (idx >= chunks.length) {
+        finishQueue();
+        return;
+      }
+      const u = new SpeechSynthesisUtterance(chunks[idx]);
+      u.lang = "en-US";
+      u.rate = voiceRateRef.current;
+      u.volume = voiceVolumeRef.current;
+      if (chosen) u.voice = chosen;
+      u.onstart = () => {
+        if (speechQueueIdRef.current !== queueId) return;
+        speakingRef.current = true;
+        setSpeaking(true);
+      };
+      u.onend = () => speakChunk(idx + 1);
+      u.onerror = () => finishQueue();
+      window.speechSynthesis.speak(u);
+    };
+
+    speakChunk(0);
   };
 
   const sendCommand = async (cmdText?: string) => {
     const query = (cmdText ?? input).trim();
-    if (!query || loading) return;
+    if (!query || loadingRef.current) return;
+    loadingRef.current = true;
     stopSpeaking();
     setInput("");
     setVoiceNotice(null);
@@ -408,7 +488,7 @@ export const JarvisCommandApp: React.FC = () => {
       if (routeCard?.data?.all_candidate_routes) {
         setCandidateRoutes(routeCard.data.all_candidate_routes);
       }
-      speakText(reply.spoken_summary);
+      speakText(reply.spoken_summary, reply.assistant_message);
       requestRefresh();
       pollHealthAndLatency();
     } catch (err: any) {
@@ -438,6 +518,7 @@ export const JarvisCommandApp: React.FC = () => {
     } finally {
       setPendingCommand(null);
       setLoading(false);
+      loadingRef.current = false;
     }
   };
 
@@ -497,15 +578,33 @@ export const JarvisCommandApp: React.FC = () => {
     }
   };
 
-  const startVoiceRecognition = () => {
+  const startVoiceRecognition = async () => {
     const SpeechRec = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRec) {
+      voiceRequestedRef.current = false;
       setVoiceNotice(
-        "Browser speech recognition unavailable; type commands or use Chrome/Edge for live mic."
+        "Voice recognition is unavailable in this browser. Use Chrome or Edge with microphone access."
       );
       return;
     }
-    setVoiceNotice(null);
+    if (voiceModeRef.current === "text") {
+      setVoiceNotice("Voice input is disabled in Text Only mode. Choose Push-to-Talk or Continuous first.");
+      return;
+    }
+    if (!window.isSecureContext) {
+      voiceRequestedRef.current = false;
+      setVoiceNotice("Microphone access requires HTTPS or localhost.");
+      return;
+    }
+    if (!navigator.mediaDevices?.getUserMedia) {
+      voiceRequestedRef.current = false;
+      setVoiceNotice("This browser does not expose microphone capture. Try Chrome or Edge.");
+      return;
+    }
+    if (voiceStartingRef.current) return;
+
+    voiceStartingRef.current = true;
+    setVoiceNotice("Requesting microphone access…");
     stopSpeaking();
     voiceEnabledRef.current = false;
     if (recognitionRef.current) {
@@ -519,81 +618,143 @@ export const JarvisCommandApp: React.FC = () => {
     cleanupAudioPipeline();
     const sessionId = micSessionIdRef.current;
 
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      if (!isMountedRef.current || micSessionIdRef.current !== sessionId) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
+      micStreamRef.current = stream;
+
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        const ctx = new AudioCtx();
+        audioCtxRef.current = ctx;
+        const src = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 128;
+        analyser.smoothingTimeConstant = 0.78;
+        src.connect(analyser);
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
+          analyser.getByteFrequencyData(data);
+          const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
+          audioLevelRef.current = Math.min(1, avg / 95);
+          const step = Math.max(1, Math.floor(data.length / WAVEFORM_BAR_COUNT));
+          const bars: number[] = [];
+          for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
+            const v = data[Math.min(data.length - 1, i * step)] / 255;
+            bars.push(Math.max(0.14, Math.min(1, v * 1.35)));
+          }
+          paintWaveform(waveformRef.current, bars);
+          rafRef.current = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch {
+        // Waveform visualization is optional; recognition can still run without it.
+      }
+    } catch (err: any) {
+      voiceRequestedRef.current = false;
+      const message =
+        err?.name === "NotAllowedError" || err?.name === "SecurityError"
+          ? "Microphone access was blocked. Allow microphone permission in your browser, then retry."
+          : err?.name === "NotFoundError"
+          ? "No microphone was found. Connect a microphone and retry."
+          : err?.message || "Unable to access the microphone. Check your input device and retry.";
+      setListening(false);
+      setVoiceNotice(message);
+      return;
+    } finally {
+      voiceStartingRef.current = false;
+    }
+
     const rec = new SpeechRec();
     rec.lang = "en-US";
-    rec.interimResults = false;
-    rec.continuous = true;
-    voiceEnabledRef.current = true;
+    rec.interimResults = true;
+    rec.continuous = voiceModeRef.current === "continuous";
+    rec.maxAlternatives = 1;
+
     rec.onstart = () => {
       if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
+      voiceEnabledRef.current = true;
       setListening(true);
-      if (navigator.mediaDevices?.getUserMedia) {
-        navigator.mediaDevices
-          .getUserMedia({ audio: true })
-          .then((stream) => {
-            if (!isMountedRef.current || micSessionIdRef.current !== sessionId) {
-              stream.getTracks().forEach((tr) => tr.stop());
-              return;
-            }
-            micStreamRef.current = stream;
-            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-            const ctx = new AudioCtx();
-            audioCtxRef.current = ctx;
-            const src = ctx.createMediaStreamSource(stream);
-            const analyser = ctx.createAnalyser();
-            analyser.fftSize = 128;
-            analyser.smoothingTimeConstant = 0.78;
-            src.connect(analyser);
-            const data = new Uint8Array(analyser.frequencyBinCount);
-            const tick = () => {
-              if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
-              analyser.getByteFrequencyData(data);
-              const avg = data.reduce((a, b) => a + b, 0) / Math.max(1, data.length);
-              audioLevelRef.current = Math.min(1, avg / 95);
-              const step = Math.max(1, Math.floor(data.length / WAVEFORM_BAR_COUNT));
-              const bars: number[] = [];
-              for (let i = 0; i < WAVEFORM_BAR_COUNT; i++) {
-                const v = data[Math.min(data.length - 1, i * step)] / 255;
-                bars.push(Math.max(0.14, Math.min(1, v * 1.35)));
-              }
-              paintWaveform(waveformRef.current, bars);
-              rafRef.current = requestAnimationFrame(tick);
-            };
-            tick();
-          })
-          .catch(() => {});
-      }
+      setVoiceNotice(null);
     };
+
     rec.onresult = (ev: any) => {
-      if (!isMountedRef.current) return;
-      const transcript = ev.results?.[0]?.[0]?.transcript;
-      if (transcript) sendCommand(transcript);
+      if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
+      let finalTranscript = "";
+      let interimTranscript = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i += 1) {
+        const result = ev.results[i];
+        const text = result?.[0]?.transcript || "";
+        if (result?.isFinal) finalTranscript += `${text} `;
+        else interimTranscript += `${text} `;
+      }
+      if (interimTranscript.trim()) setInput(interimTranscript.trim());
+      if (!finalTranscript.trim()) return;
+
+      const command = finalTranscript.trim();
+      voiceEnabledRef.current = false;
+      setListening(false);
+      setInput("");
+      try {
+        rec.stop();
+      } catch {
+        // recognition may already be stopped
+      }
+      void sendCommand(command).finally(() => {
+        if (!voiceRequestedRef.current || voiceModeRef.current !== "continuous") return;
+        if (autoSpeakRef.current) return;
+        window.setTimeout(() => {
+          if (isMountedRef.current && voiceRequestedRef.current && !loadingRef.current) {
+            void startVoiceRecognition();
+          }
+        }, 250);
+      });
     };
+
     rec.onerror = (ev: any) => {
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
+      const messages: Record<string, string> = {
+        "not-allowed": "Microphone permission was denied. Allow it in browser settings and retry.",
+        "service-not-allowed": "The browser speech service is unavailable. Try Chrome or Edge.",
+        "audio-capture": "No usable microphone input was detected. Check your microphone and retry.",
+        network: "The speech recognition service could not be reached. Check your connection.",
+        "no-speech": "No speech was detected. Try again.",
+      };
+      voiceEnabledRef.current = false;
       setListening(false);
       cleanupAudioPipeline();
-      setVoiceNotice(`Voice input status: ${ev.error}`);
+      setVoiceNotice(messages[ev.error] || `Voice input error: ${ev.error}`);
+      if (ev.error !== "no-speech") voiceRequestedRef.current = false;
+      else if (voiceRequestedRef.current && voiceModeRef.current === "continuous") {
+        window.setTimeout(() => startVoiceRecognition(), 500);
+      }
     };
+
     rec.onend = () => {
       if (!isMountedRef.current || micSessionIdRef.current !== sessionId) return;
-      if (voiceEnabledRef.current) {
-        try {
-          rec.start();
-        } catch {
-          voiceEnabledRef.current = false;
-          setListening(false);
-          cleanupAudioPipeline();
-        }
+      if (voiceEnabledRef.current && voiceRequestedRef.current && voiceModeRef.current === "continuous") {
+        window.setTimeout(() => startVoiceRecognition(), 200);
         return;
       }
       setListening(false);
       cleanupAudioPipeline();
     };
+
     recognitionRef.current = rec;
     try {
       rec.start();
     } catch (err: any) {
+      voiceRequestedRef.current = false;
       setListening(false);
       cleanupAudioPipeline();
       setVoiceNotice(err?.message || "Unable to start speech recognition.");
@@ -601,14 +762,21 @@ export const JarvisCommandApp: React.FC = () => {
   };
 
   const toggleVoiceInput = () => {
-    if (listening) {
+    if (listening || voiceEnabledRef.current || voiceStartingRef.current) {
+      voiceRequestedRef.current = false;
       voiceEnabledRef.current = false;
-      recognitionRef.current?.stop();
+      try {
+        recognitionRef.current?.stop();
+      } catch {
+        // ignore recognition shutdown errors
+      }
       setListening(false);
       cleanupAudioPipeline();
+      setVoiceNotice("Voice input stopped.");
       return;
     }
-    startVoiceRecognition();
+    voiceRequestedRef.current = true;
+    void startVoiceRecognition();
   };
 
   const handleApproval = async (approvalId: string, approve: boolean) => {
@@ -749,6 +917,7 @@ export const JarvisCommandApp: React.FC = () => {
 
   const toggleDock = (tab: Exclude<DockTab, null>) => {
     setActiveDock((cur) => (cur === tab ? null : tab));
+    setDockMenuOpen(false);
   };
 
   const renderInlineApprovalCard = (approval: ApprovalItem) => {
@@ -837,7 +1006,7 @@ export const JarvisCommandApp: React.FC = () => {
   };
 
   return (
-    <div className="w-screen h-screen bg-[#050505] text-[#FAFAFA] flex flex-col overflow-hidden font-sans relative select-none">
+    <div className="jarvis-command-app w-screen h-screen bg-black text-[#FAFAFA] flex flex-col overflow-hidden font-sans relative select-none">
       {/* Ultra-Sleek Stark Industries Top Command Strip */}
       <header className="h-11 px-4 bg-[#0B0C0E]/90 backdrop-blur-md border-b border-[#2A2D34] flex items-center justify-between shrink-0 z-30">
         <div className="flex items-center gap-3">
@@ -910,7 +1079,7 @@ export const JarvisCommandApp: React.FC = () => {
       </header>
 
       {/* Main Stage: Full-Bleed 3D JARVIS Core OR Split Core + Flat Tactical Map */}
-      <main className="flex-1 relative overflow-hidden flex bg-[#050505]">
+      <main className="flex-1 relative overflow-hidden flex bg-black">
         <div
           className={`relative h-full transition-all duration-300 ${
             stageMode === "split" ? "w-1/2 border-r border-[#2A2D34]" : "w-full"
@@ -1141,8 +1310,10 @@ export const JarvisCommandApp: React.FC = () => {
                         )}
 
                         {/* Assistant Message Body */}
-                        <div className="text-xs text-[#E4E4E7] whitespace-pre-line leading-relaxed">
-                          {m.assistant_message}
+                        <div className="jarvis-markdown text-xs text-[#E4E4E7] leading-relaxed break-words">
+                          <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                            {m.assistant_message}
+                          </ReactMarkdown>
                         </div>
 
                         {/* Inline Approval Card (no modal) */}
@@ -1418,7 +1589,11 @@ export const JarvisCommandApp: React.FC = () => {
                   INPUT MODE
                   <select
                     value={voiceMode}
-                    onChange={(e) => setVoiceMode(e.target.value as any)}
+                    onChange={(e) => {
+                      const nextMode = e.target.value as "ptt" | "continuous" | "text";
+                      voiceModeRef.current = nextMode;
+                      setVoiceMode(nextMode);
+                    }}
                     className="bg-[#0F1012] border border-[#2A2D34] rounded-lg px-2.5 py-1.5 text-[#FAFAFA] focus:outline-none focus:border-white/40"
                   >
                     <option value="ptt">Push-to-Talk</option>
@@ -1473,87 +1648,127 @@ export const JarvisCommandApp: React.FC = () => {
           </section>
         )}
 
-        {/* Bottom Command Dock + Live Invariants & Latency Footer Badge */}
-        <div className="absolute bottom-2 left-1/2 -translate-x-1/2 z-30 flex flex-col items-center gap-1.5 pointer-events-none max-w-[calc(100vw-1rem)]">
-          <div
-            aria-label="JARVIS System Invariants and Latency"
-            className="pointer-events-auto px-3 py-0.5 rounded-full bg-[#0B0C0E]/90 backdrop-blur-md border border-[#2A2D34] text-[10px] font-mono tracking-wide text-[#A1A1AA] shadow-lg flex items-center gap-1.5 whitespace-nowrap overflow-x-auto max-w-full"
-          >
-            <span className="text-[#FAFAFA]">
-              {healthInvariants.approvalGated === null ? "?" : healthInvariants.approvalGated ? "✓" : "✗"}
-            </span>
-            <span>Approval-gated</span>
-            <span className="text-[#52525B]">·</span>
-            <span className="text-[#FAFAFA]">
-              {healthInvariants.zeroDatabase === null ? "?" : healthInvariants.zeroDatabase ? "✓" : "✗"}
-            </span>
-            <span>Zero-database</span>
-            <span className="text-[#52525B]">·</span>
-            <span className="text-[#FAFAFA]">
-              {healthInvariants.toolCount ?? (availableTools.length || 50)} tools
-            </span>
-            <span className="text-[#52525B]">·</span>
-            <span className="text-[#E4E4E7]">
-              {latencyStats.count > 0
-                ? `p50 ${latencyStats.p50Ms}ms · p95 ${latencyStats.p95Ms}ms · p99 ${latencyStats.p99Ms}ms`
-                : "<5ms grounded"}
-            </span>
-          </div>
+        {/* Compact bottom-right JARVIS launcher; controls expand only on demand. */}
+        <div className="absolute bottom-4 right-4 z-30 flex flex-col items-end gap-2">
+          {dockMenuOpen && (
+            <div className="w-[min(720px,calc(100vw-2rem))] max-h-[calc(100vh-6rem)] overflow-y-auto rounded-2xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl p-2.5 space-y-2">
+              <div className="flex items-center justify-between px-1">
+                <span className="text-[10px] font-mono tracking-[0.18em] uppercase text-[#A1A1AA]">
+                  JARVIS CONTROL
+                </span>
+                <button
+                  onClick={() => setDockMenuOpen(false)}
+                  aria-label="Close JARVIS controls"
+                  className="w-6 h-6 rounded-md grid place-items-center text-[#71717A] hover:text-[#FAFAFA] hover:bg-[#16181C] transition-colors"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
 
-          <nav
-            aria-label="JARVIS Bottom Command Dock"
-            className="pointer-events-auto px-2 py-1.5 rounded-full bg-[#0B0C0E]/95 backdrop-blur-xl border border-white/15 shadow-2xl flex items-center gap-1"
-          >
-          {(
-            [
-              { id: "logs", label: "LOGS", icon: Terminal },
-              { id: "command", label: "COMMAND & VOICE", icon: Mic },
-              {
-                id: "tools",
-                label: `${availableTools.length || 50} TOOLS`,
-                icon: Wrench,
-              },
-              {
-                id: "approvals",
-                label:
-                  pendingApprovalsCount > 0 ? `APPROVALS (${pendingApprovalsCount})` : "APPROVALS",
-                icon: ShieldAlert,
-              },
-              { id: "voice", label: "VOICE SETTINGS", icon: Sliders },
-            ] as const
-          ).map((item) => {
-            const Icon = item.icon;
-            const isActive = activeDock === item.id;
-            return (
-              <button
-                key={item.id}
-                onClick={() => toggleDock(item.id)}
-                className={`px-3 py-1.5 rounded-full text-[11px] font-mono tracking-wide flex items-center gap-1.5 transition-all whitespace-nowrap ${
-                  isActive
-                    ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
-                    : "bg-transparent text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#16181C]"
-                }`}
+              <DemoDirector embedded />
+
+              <div
+                aria-label="JARVIS System Invariants and Latency"
+                className="px-3 py-1.5 rounded-lg bg-[#050505] border border-[#2A2D34] text-[10px] font-mono tracking-wide text-[#A1A1AA] flex flex-wrap items-center justify-center gap-x-2 gap-y-1"
               >
-                <Icon className="w-3.5 h-3.5" />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
+                <span className="text-[#FAFAFA]">
+                  {healthInvariants.approvalGated === null ? "?" : healthInvariants.approvalGated ? "✓" : "✗"}
+                </span>
+                <span>Approval-gated</span>
+                <span className="text-[#52525B]">·</span>
+                <span className="text-[#FAFAFA]">
+                  {healthInvariants.zeroDatabase === null ? "?" : healthInvariants.zeroDatabase ? "✓" : "✗"}
+                </span>
+                <span>Zero-database</span>
+                <span className="text-[#52525B]">·</span>
+                <span className="text-[#FAFAFA]">
+                  {healthInvariants.toolCount ?? (availableTools.length || 50)} tools
+                </span>
+                <span className="text-[#52525B]">·</span>
+                <span className="text-[#E4E4E7]">
+                  {latencyStats.count > 0
+                    ? `p50 ${latencyStats.p50Ms}ms · p95 ${latencyStats.p95Ms}ms · p99 ${latencyStats.p99Ms}ms`
+                    : "<5ms grounded"}
+                </span>
+              </div>
 
-          <div className="w-px h-5 bg-[#2A2D34] mx-0.5" />
+              <nav
+                aria-label="JARVIS Command Dock"
+                className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-1"
+              >
+                {(
+                  [
+                    { id: "logs", label: "LOGS", icon: Terminal },
+                    { id: "command", label: "COMMAND & VOICE", icon: Mic },
+                    {
+                      id: "tools",
+                      label: `${availableTools.length || 50} TOOLS`,
+                      icon: Wrench,
+                    },
+                    {
+                      id: "approvals",
+                      label:
+                        pendingApprovalsCount > 0 ? `APPROVALS (${pendingApprovalsCount})` : "APPROVALS",
+                      icon: ShieldAlert,
+                    },
+                    { id: "voice", label: "VOICE SETTINGS", icon: Sliders },
+                  ] as const
+                ).map((item) => {
+                  const Icon = item.icon;
+                  const isActive = activeDock === item.id;
+                  return (
+                    <button
+                      key={item.id}
+                      onClick={() => toggleDock(item.id)}
+                      className={`px-2.5 py-2 rounded-lg text-[10px] font-mono tracking-wide flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
+                        isActive
+                          ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
+                          : "bg-[#16181C] text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#23262C]"
+                      }`}
+                    >
+                      <Icon className="w-3.5 h-3.5 shrink-0" />
+                      <span>{item.label}</span>
+                    </button>
+                  );
+                })}
+
+                <button
+                  onClick={() => {
+                    setStageMode((m) => (m === "fullscreen" ? "split" : "fullscreen"));
+                    setDockMenuOpen(false);
+                  }}
+                  className={`px-2.5 py-2 rounded-lg text-[10px] font-mono tracking-wide flex items-center justify-center gap-1.5 transition-all whitespace-nowrap ${
+                    stageMode === "split"
+                      ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
+                      : "bg-[#16181C] text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#23262C]"
+                  }`}
+                >
+                  <MapIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>FLAT MAP</span>
+                </button>
+              </nav>
+            </div>
+          )}
 
           <button
-            onClick={() => setStageMode((m) => (m === "fullscreen" ? "split" : "fullscreen"))}
-            className={`px-3 py-1.5 rounded-full text-[11px] font-mono tracking-wide flex items-center gap-1.5 transition-all whitespace-nowrap ${
-              stageMode === "split"
-                ? "bg-[#FAFAFA] text-[#050505] font-semibold shadow"
-                : "bg-transparent text-[#A1A1AA] hover:text-[#FAFAFA] hover:bg-[#16181C]"
+            onClick={() => setDockMenuOpen((open) => !open)}
+            aria-expanded={dockMenuOpen}
+            aria-label={dockMenuOpen ? "Collapse JARVIS controls" : "Expand JARVIS controls"}
+            className={`h-11 px-4 rounded-full border shadow-2xl backdrop-blur-xl flex items-center gap-2 text-[11px] font-mono tracking-[0.14em] transition-all ${
+              dockMenuOpen
+                ? "bg-[#FAFAFA] text-[#050505] border-[#FAFAFA]"
+                : "bg-[#0B0C0E]/95 text-[#FAFAFA] border-white/20 hover:bg-[#16181C]"
             }`}
           >
-            <MapIcon className="w-3.5 h-3.5" />
-            <span>FLAT MAP</span>
+            <Terminal className="w-4 h-4" />
+            <span>JARVIS</span>
+            {pendingApprovalsCount > 0 && (
+              <span className={`min-w-5 h-5 px-1 rounded-full grid place-items-center text-[9px] ${dockMenuOpen ? "bg-[#050505] text-[#FAFAFA]" : "bg-[#FAFAFA] text-[#050505]"}`}>
+                {pendingApprovalsCount}
+              </span>
+            )}
+            {dockMenuOpen ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
           </button>
-          </nav>
         </div>
       </main>
     </div>

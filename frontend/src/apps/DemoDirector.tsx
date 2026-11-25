@@ -24,6 +24,10 @@ interface DemoToast {
   isError?: boolean;
 }
 
+interface DemoDirectorProps {
+  embedded?: boolean;
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function callAiTool(toolName: string, args: Record<string, unknown>): Promise<any> {
@@ -74,7 +78,7 @@ async function approveDemoOperation(approvalId: string): Promise<any> {
   return data;
 }
 
-export const DemoDirector: React.FC = () => {
+export const DemoDirector: React.FC<DemoDirectorProps> = ({ embedded = false }) => {
   const isEnabled = useMemo(() => {
     if (typeof window === "undefined") return false;
     return (
@@ -272,7 +276,7 @@ export const DemoDirector: React.FC = () => {
       {toast && (
         <div
           role={toast.isError ? "alert" : "status"}
-          className={`fixed top-14 right-4 z-[60] max-w-sm rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl shadow-2xl p-3 text-[#FAFAFA] font-sans border ${
+          className={`${embedded ? "relative" : "fixed top-14 right-4 z-[60]"} max-w-sm rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl shadow-2xl p-3 text-[#FAFAFA] font-sans border ${
             toast.isError ? "border-red-500/60" : "border-white/20"
           }`}
         >
@@ -297,24 +301,41 @@ export const DemoDirector: React.FC = () => {
         </div>
       )}
 
-      {/* Collapsible Floating Demo Director Widget */}
-      <aside className="fixed top-14 left-4 z-[55] w-80 max-w-[calc(100vw-2rem)] rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-[#2A2D34] shadow-2xl text-[#FAFAFA] font-sans overflow-hidden">
-        <button
-          onClick={() => setCollapsed((c) => !c)}
-          className="w-full px-3 py-2 bg-[#0F1012] border-b border-[#2A2D34] flex items-center justify-between text-[11px] font-mono tracking-wider uppercase hover:bg-[#16181C] transition-colors"
-        >
-          <span className="flex items-center gap-2 text-[#FAFAFA] font-semibold">
-            <Clapperboard className="w-3.5 h-3.5 text-[#FAFAFA]" />
-            DEMO DIRECTOR
-            {runningScenario && <Loader2 className="w-3 h-3 animate-spin text-[#A1A1AA]" />}
-          </span>
-          <span className="flex items-center gap-1 text-[10px] text-[#A1A1AA]">
-            {collapsed ? "Expand" : "Hide"}
-            {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
-          </span>
-        </button>
+      {/* Standalone widget for World/Operations; embedded panel for JARVIS. */}
+      <aside
+        className={
+          embedded
+            ? "w-full rounded-xl bg-[#0B0C0E]/95 border border-[#2A2D34] text-[#FAFAFA] font-sans overflow-hidden"
+            : "fixed top-14 left-4 z-[55] w-80 max-w-[calc(100vw-2rem)] rounded-xl bg-[#0B0C0E]/95 backdrop-blur-xl border border-[#2A2D34] shadow-2xl text-[#FAFAFA] font-sans overflow-hidden"
+        }
+      >
+        {embedded ? (
+          <div className="w-full px-3 py-2 bg-[#0F1012] border-b border-[#2A2D34] flex items-center justify-between text-[11px] font-mono tracking-wider uppercase">
+            <span className="flex items-center gap-2 text-[#FAFAFA] font-semibold">
+              <Clapperboard className="w-3.5 h-3.5 text-[#FAFAFA]" />
+              DEMO DIRECTOR
+              {runningScenario && <Loader2 className="w-3 h-3 animate-spin text-[#A1A1AA]" />}
+            </span>
+            <span className="text-[9px] text-[#71717A]">LIVE SCENARIOS</span>
+          </div>
+        ) : (
+          <button
+            onClick={() => setCollapsed((c) => !c)}
+            className="w-full px-3 py-2 bg-[#0F1012] border-b border-[#2A2D34] flex items-center justify-between text-[11px] font-mono tracking-wider uppercase hover:bg-[#16181C] transition-colors"
+          >
+            <span className="flex items-center gap-2 text-[#FAFAFA] font-semibold">
+              <Clapperboard className="w-3.5 h-3.5 text-[#FAFAFA]" />
+              DEMO DIRECTOR
+              {runningScenario && <Loader2 className="w-3 h-3 animate-spin text-[#A1A1AA]" />}
+            </span>
+            <span className="flex items-center gap-1 text-[10px] text-[#A1A1AA]">
+              {collapsed ? "Expand" : "Hide"}
+              {collapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+            </span>
+          </button>
+        )}
 
-        {!collapsed && (
+        {(!collapsed || embedded) && (
           <div className="p-3 space-y-2.5">
             {/* Button 1: Typhoon hits Veridia */}
             <button
