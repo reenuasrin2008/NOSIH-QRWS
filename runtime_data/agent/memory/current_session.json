@@ -1,0 +1,15 @@
+{
+  "schema_version": "2.0.0",
+  "session_id": "SESSION-63E91CC4",
+  "updated_at": "2026-11-25T07:55:58.321601+00:00",
+  "mode": "ASSISTED",
+  "provider_preference": "AUTO",
+  "current_context": {
+    "selected_disaster_id": null,
+    "selected_drone_id": null,
+    "selected_survivor_id": null,
+    "selected_task_id": null,
+    "selected_region": null,
+    "last_world_version": 1
+  }
+}

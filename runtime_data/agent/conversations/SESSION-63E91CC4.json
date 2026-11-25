@@ -1,0 +1,154 @@
+{
+  "schema_version": "2.0.0",
+  "session_id": "SESSION-63E91CC4",
+  "created_at": "2026-11-25T07:30:59.685739+00:00",
+  "updated_at": "2026-11-25T07:55:58.321601+00:00",
+  "provider_preference": "AUTO",
+  "mode": "ASSISTED",
+  "messages": [
+    {
+      "role": "user",
+      "content": "hey",
+      "timestamp": "2026-11-25T07:33:10.095972+00:00",
+      "execution_id": "EXEC-794745B0",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:33:10.097742+00:00",
+      "execution_id": "EXEC-794745B0",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "hey how are you",
+      "timestamp": "2026-11-25T07:43:00.539415+00:00",
+      "execution_id": "EXEC-0469B8DF",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:43:00.540751+00:00",
+      "execution_id": "EXEC-0469B8DF",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "hey how are you",
+      "timestamp": "2026-11-25T07:44:49.657630+00:00",
+      "execution_id": "EXEC-2CCEF2D9",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:44:49.658992+00:00",
+      "execution_id": "EXEC-2CCEF2D9",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "hi",
+      "timestamp": "2026-11-25T07:44:56.556734+00:00",
+      "execution_id": "EXEC-D2FC700B",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:44:56.558492+00:00",
+      "execution_id": "EXEC-D2FC700B",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "hey Jarvis",
+      "timestamp": "2026-11-25T07:47:05.531030+00:00",
+      "execution_id": "EXEC-574E22FE",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:47:05.532407+00:00",
+      "execution_id": "EXEC-574E22FE",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "Rakhi",
+      "timestamp": "2026-11-25T07:47:13.122086+00:00",
+      "execution_id": "EXEC-46BFCF2F",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:47:13.123808+00:00",
+      "execution_id": "EXEC-46BFCF2F",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "user",
+      "content": "hi Jarvis",
+      "timestamp": "2026-11-25T07:55:58.317259+00:00",
+      "execution_id": "EXEC-B8FDD3C1",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    },
+    {
+      "role": "assistant",
+      "content": "AI Provider Error (AUTO / PROVIDER_SERVER_ERROR): All selected AI providers failed: GROK: No API keys configured for GROK. Set GROK_API_KEY_1..3 in agent_backend/.env. | GEMINI: No API keys configured for GEMINI. Set GEMINI_API_KEY_1..3 in agent_backend/.env.",
+      "timestamp": "2026-11-25T07:55:58.321591+00:00",
+      "execution_id": "EXEC-B8FDD3C1",
+      "tool_calls": [],
+      "tool_call_id": null,
+      "tool_name": null
+    }
+  ],
+  "execution_ids": [
+    "EXEC-794745B0",
+    "EXEC-0469B8DF",
+    "EXEC-2CCEF2D9",
+    "EXEC-D2FC700B",
+    "EXEC-574E22FE",
+    "EXEC-46BFCF2F",
+    "EXEC-B8FDD3C1"
+  ],
+  "current_context": {
+    "selected_disaster_id": null,
+    "selected_drone_id": null,
+    "selected_survivor_id": null,
+    "selected_task_id": null,
+    "selected_region": null,
+    "last_world_version": 1
+  },
+  "summary": ""
+}
