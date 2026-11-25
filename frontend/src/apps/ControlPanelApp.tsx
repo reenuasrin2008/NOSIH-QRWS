@@ -69,7 +69,7 @@ export const ControlPanelApp: React.FC = () => {
   useKeyboardShortcuts();
 
   useEffect(() => {
-    document.title = "QUANTUM RESCUE — Mission Control Panel (:5174)";
+    document.title = "CONTROL PANEL — QUANTUM RESCUE (:5174)";
   }, []);
 
   useEffect(() => {
@@ -180,7 +180,7 @@ export const ControlPanelApp: React.FC = () => {
           </div>
           <span className="px-2 py-0.5 bg-[#050505] border border-[#262626] text-[10px] text-neutral-200 flex items-center gap-1.5">
             <Radio className={`w-3 h-3 ${connected ? "text-neutral-200" : "text-neutral-300"}`} />
-            {connected ? "SYNCED WITH 3D VISUAL (:5173)" : "BACKEND OFFLINE"}
+            {connected ? "SYNCED WITH WORLD (:5173)" : "BACKEND OFFLINE"}
           </span>
         </div>
 
@@ -208,10 +208,10 @@ export const ControlPanelApp: React.FC = () => {
             rel="noreferrer"
             className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 border border-neutral-600 text-white flex items-center gap-1.5 font-semibold"
           >
-            <Video className="w-3.5 h-3.5" /> OPEN 3D VISUAL (:5173) <ExternalLink className="w-3 h-3" />
+            <Video className="w-3.5 h-3.5" /> WORLD (:5173) <ExternalLink className="w-3 h-3" />
           </a>
           <a href="http://localhost:5175" target="_blank" rel="noreferrer" className="px-2.5 py-1 bg-neutral-900 hover:bg-neutral-800 border border-neutral-500 text-white flex items-center gap-1.5 font-semibold">
-            AI CONSOLE (:5175) <ExternalLink className="w-3 h-3" />
+            JARVIS (:5175) <ExternalLink className="w-3 h-3" />
           </a>
           <button onClick={() => agentApi.stopExecution().then(() => setToast("AI Agent stop signal sent.")).catch(() => setToast("AI Agent service (:8001) unreachable."))} className="px-2 py-1 bg-neutral-900 hover:bg-neutral-800 border border-neutral-500 text-white font-semibold" title="Stop Current AI Execution">
             STOP AI

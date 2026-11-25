@@ -24,7 +24,7 @@ export const App: React.FC = () => {
   const mode = urlMode || (typeof __APP_MODE__ !== "undefined" ? __APP_MODE__ : "scene");
 
   if (mode === "control") return <ControlPanelApp />;
-  if (mode === "agent") return <AgentConsoleApp />;
+  if (mode === "jarvis" || mode === "agent") return <AgentConsoleApp />;
   return <SceneVisualApp />;
 };
 

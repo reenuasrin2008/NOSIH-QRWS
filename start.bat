@@ -2,7 +2,7 @@
 setlocal EnableDelayedExpansion
 echo =====================================================
 echo            QUANTUM RESCUE V2
-echo       AUTONOMOUS DISASTER RESPONSE SYSTEM
+echo       WORLD  ^|  CONTROL PANEL  ^|  JARVIS
 echo =====================================================
 echo.
 echo [CHECK] Verifying Python and Node.js availability...
@@ -29,36 +29,34 @@ if not exist "frontend\node_modules" (
   popd
 )
 
-echo [1] SIMULATION BACKEND
+echo [1] SIMULATION ENGINE (BACKEND)
 echo     http://127.0.0.1:8000
-start "Quantum Rescue V2 — Simulation Backend (:8000)" cmd /k "cd backend && .venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8000"
+start "SIMULATION ENGINE (:8000)" cmd /k "cd backend && .venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8000"
 
 timeout /t 2 /nobreak >nul
 
-echo [2] 3D VISUAL ENVIRONMENT
+echo [2] WORLD (3D METROPOLIS)
 echo     http://localhost:5173
-start "Quantum Rescue V2 — 3D Visual (:5173)" cmd /k "cd frontend && npm run dev:scene"
+start "WORLD (:5173)" cmd /k "cd frontend && npm run dev:world"
 
-echo [3] MISSION CONTROL PANEL
+echo [3] CONTROL PANEL (TERMINAL)
 echo     http://localhost:5174
-start "Quantum Rescue V2 — Control Panel (:5174)" cmd /k "cd frontend && npm run dev:control"
+start "CONTROL PANEL (:5174)" cmd /k "cd frontend && npm run dev:control"
 
-echo [4] AI AGENT BACKEND
+echo [4] JARVIS AI ENGINE (BACKEND)
 echo     http://127.0.0.1:8001
-start "Quantum Rescue V2 — AI Agent Backend (:8001)" cmd /k "cd agent_backend && ..\backend\.venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8001"
+start "JARVIS AI ENGINE (:8001)" cmd /k "cd agent_backend && ..\backend\.venv\Scripts\uvicorn.exe app.main:app --host 127.0.0.1 --port 8001"
 
-echo [5] AI RESCUE COMMAND CONSOLE
+echo [5] JARVIS (3D HOLOGRAPHIC AI)
 echo     http://localhost:5175
-start "Quantum Rescue V2 — AI Console (:5175)" cmd /k "cd frontend && npm run dev:agent"
+start "JARVIS (:5175)" cmd /k "cd frontend && npm run dev:jarvis"
 
 echo.
 echo =====================================================
-echo ALL SERVICES STARTED
+echo ALL SERVERS STARTED
 echo =====================================================
-echo   [1] Simulation Backend : http://127.0.0.1:8000
-echo   [2] 3D Visual          : http://localhost:5173
-echo   [3] Control Panel      : http://localhost:5174
-echo   [4] AI Agent Backend   : http://127.0.0.1:8001
-echo   [5] AI Rescue Console  : http://localhost:5175
+echo   WORLD         : http://localhost:5173
+echo   CONTROL PANEL : http://localhost:5174
+echo   JARVIS        : http://localhost:5175
 echo =====================================================
 echo.

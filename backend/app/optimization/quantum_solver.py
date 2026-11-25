@@ -15,75 +15,9 @@ from app.navigation.pathfinder import SpatialAirspaceGrid
 from app.optimization.feasibility import estimate_assignment_cost, is_drone_eligible_for_task
 from app.optimization.greedy_solver import solve_greedy
 
-try:
-    from qiskit import QuantumCircuit
-    from qiskit_aer import AerSimulator
-    HAS_QISKIT = True
-except Exception:
-    HAS_QISKIT = False
-
-
 def _qubo_energy(bitstring: str, Q: np.ndarray) -> float:
     x = np.array([int(b) for b in bitstring], dtype=float)
     return float(x @ Q @ x)
-
-
-def _run_qaoa_qiskit(Q: np.ndarray, p_layers: int, shots: int, max_iter: int) -> Tuple[str, float, int, int, List[dict], List[dict]]:
-    n = Q.shape[0]
-    sim = AerSimulator()
-    h = np.zeros(n)
-    J = np.zeros((n, n))
-    for i in range(n):
-        h[i] += 0.5 * Q[i, i]
-        for j in range(i + 1, n):
-            coeff = Q[i, j] + Q[j, i]
-            if abs(coeff) > 1e-9:
-                h[i] += 0.25 * coeff
-                h[j] += 0.25 * coeff
-                J[i, j] += 0.25 * coeff
-
-    def build_circuit(params: np.ndarray) -> QuantumCircuit:
-        gammas, betas = params[:p_layers], params[p_layers:]
-        qc = QuantumCircuit(n)
-        qc.h(range(n))
-        for layer in range(p_layers):
-            g, b = float(gammas[layer]), float(betas[layer])
-            for i in range(n):
-                if abs(h[i]) > 1e-9:
-                    qc.rz(2.0 * g * h[i], i)
-            for i in range(n):
-                for j in range(i + 1, n):
-                    if abs(J[i, j]) > 1e-9:
-                        qc.rzz(2.0 * g * J[i, j], i, j)
-            for i in range(n):
-                qc.rx(2.0 * b, i)
-        qc.measure_all()
-        return qc
-
-    iter_count = 0
-    history: List[dict] = []
-
-    def objective(params: np.ndarray) -> float:
-        nonlocal iter_count
-        iter_count += 1
-        counts = sim.run(build_circuit(params), shots=shots).result().get_counts()
-        val = sum((cnt / shots) * _qubo_energy(bs[::-1], Q) for bs, cnt in counts.items())
-        history.append({'iter': float(iter_count), 'energy': round(float(val), 2)})
-        return val
-
-    init_params = np.concatenate([np.linspace(0.2, 0.7, p_layers), np.linspace(0.3, 0.6, p_layers)])
-    res = minimize(objective, init_params, method="COBYLA", options={"maxiter": max_iter})
-    final_qc = build_circuit(res.x)
-    depth = final_qc.depth()
-    final_counts = sim.run(final_qc, shots=shots).result().get_counts()
-
-    ranked = sorted(
-        [(bs[::-1], cnt, round(_qubo_energy(bs[::-1], Q), 3)) for bs, cnt in final_counts.items()],
-        key=lambda item: (item[2], -item[1]),
-    )
-    best_bs, _, best_e = ranked[0]
-    top_samples = [{"bitstring": r[0], "count": r[1], "energy": r[2]} for r in ranked[:5]]
-    return best_bs, best_e, depth, iter_count, top_samples, history
 
 
 def _run_qaoa_statevector_numpy(Q: np.ndarray, p_layers: int, shots: int, max_iter: int, seed: int = 42) -> Tuple[str, float, int, int, List[dict], List[dict]]:
@@ -190,11 +124,7 @@ def solve_quantum_qaoa(
     n_qubits = len(sub_vars)
     assignments: Dict[str, List[str]] = {d.id: list(d.assigned_task_ids) for d in eligible_drones}
     repaired = 0
-    backend_label = (
-        "QAOA — Classical quantum-circuit simulation (Qiskit Aer)"
-        if HAS_QISKIT
-        else "QAOA — Classical quantum-circuit simulation (Exact Statevector)"
-    )
+    backend_label = "QAOA — Exact Statevector Simulation (NumPy)"
     q_metrics = QuantumMetrics(executed=False, backend_name=backend_label)
 
     assigned_in_qaoa: set[str] = set()
@@ -225,10 +155,7 @@ def solve_quantum_qaoa(
                 for j in range(i + 1, len(indices)):
                     Q[indices[i], indices[j]] += penalty_conflict
 
-        if HAS_QISKIT:
-            best_bs, best_e, depth, iters, top_samples, conv_hist = _run_qaoa_qiskit(Q, CONFIG.qaoa_layers, CONFIG.qaoa_shots, CONFIG.qaoa_max_iter)
-        else:
-            best_bs, best_e, depth, iters, top_samples, conv_hist = _run_qaoa_statevector_numpy(Q, CONFIG.qaoa_layers, CONFIG.qaoa_shots, CONFIG.qaoa_max_iter, seed=seed)
+        best_bs, best_e, depth, iters, top_samples, conv_hist = _run_qaoa_statevector_numpy(Q, CONFIG.qaoa_layers, CONFIG.qaoa_shots, CONFIG.qaoa_max_iter, seed=seed)
 
         q_time_ms = round((time.perf_counter() - qt0) * 1000.0, 2)
 

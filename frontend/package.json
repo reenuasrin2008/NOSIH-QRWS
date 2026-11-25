@@ -1,14 +1,16 @@
 {
   "name": "quantum-rescue-frontend",
   "private": true,
-  "version": "2.2.0",
+  "version": "2.3.0",
   "type": "module",
   "scripts": {
-    "dev": "vite --config vite.scene.config.ts",
-    "dev:scene": "vite --config vite.scene.config.ts",
+    "dev": "vite --config vite.world.config.ts",
+    "dev:world": "vite --config vite.world.config.ts",
     "dev:control": "vite --config vite.control.config.ts",
-    "dev:agent": "vite --config vite.agent.config.ts",
-    "build": "tsc && vite build --config vite.scene.config.ts",
+    "dev:jarvis": "vite --config vite.jarvis.config.ts",
+    "dev:scene": "vite --config vite.world.config.ts",
+    "dev:agent": "vite --config vite.jarvis.config.ts",
+    "build": "tsc && vite build --config vite.world.config.ts",
     "preview": "vite preview"
   },
   "dependencies": {

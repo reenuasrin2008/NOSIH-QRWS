@@ -11,21 +11,45 @@ from app.models.actions import ProviderResponse, ToolCallRequest
 from app.providers.base_provider import BaseAIProvider
 from app.providers.key_rotator import KeySlot, ProviderError, ProviderErrorKind, RoundRobinKeyRotator
 
+_GEMINI_ALLOWED_SCHEMA_KEYS = {
+    "type",
+    "format",
+    "description",
+    "nullable",
+    "enum",
+    "items",
+    "properties",
+    "required",
+}
+
 
 def _sanitize_gemini_schema(schema: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip JSON Schema fields Gemini REST API rejects (e.g., additionalProperties)."""
+    """Keep strictly Gemini v1beta-supported Schema fields; fold numeric bounds into description."""
     if not isinstance(schema, dict):
         return {}
     cleaned: Dict[str, Any] = {}
+    bounds_note: List[str] = []
+    if "minimum" in schema:
+        bounds_note.append(f"min={schema['minimum']}")
+    if "maximum" in schema:
+        bounds_note.append(f"max={schema['maximum']}")
+
     for k, v in schema.items():
-        if k in ("additionalProperties", "$schema", "default"):
+        if k not in _GEMINI_ALLOWED_SCHEMA_KEYS:
             continue
         if k == "properties" and isinstance(v, dict):
             cleaned["properties"] = {pk: _sanitize_gemini_schema(pv) for pk, pv in v.items()}
         elif k == "items" and isinstance(v, dict):
             cleaned["items"] = _sanitize_gemini_schema(v)
+        elif k == "type" and isinstance(v, str):
+            cleaned["type"] = v.upper()
         else:
             cleaned[k] = v
+
+    if bounds_note:
+        existing_desc = str(cleaned.get("description", "")).strip()
+        suffix = f"({', '.join(bounds_note)})"
+        cleaned["description"] = f"{existing_desc} {suffix}".strip()
     return cleaned
 
 
@@ -87,6 +111,7 @@ class GeminiProvider(BaseAIProvider):
 
     @staticmethod
     def build_contents(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Build Gemini contents array, grouping consecutive tool responses into a single user turn."""
         contents: List[Dict[str, Any]] = []
         for m in messages:
             role = m.get("role", "user")
@@ -98,15 +123,17 @@ class GeminiProvider(BaseAIProvider):
                     parsed = {"output": str(raw)}
                 if not isinstance(parsed, dict):
                     parsed = {"result": parsed}
-                contents.append({
-                    "role": "user",
-                    "parts": [{
-                        "functionResponse": {
-                            "name": m.get("tool_name", "tool"),
-                            "response": parsed,
-                        }
-                    }],
-                })
+                part = {
+                    "functionResponse": {
+                        "name": m.get("tool_name", "tool"),
+                        "response": parsed,
+                    }
+                }
+                # Gemini requires all functionResponse parts for a multi-call model turn in ONE user message
+                if contents and contents[-1].get("role") == "user" and contents[-1]["parts"] and "functionResponse" in contents[-1]["parts"][0]:
+                    contents[-1]["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
             elif role == "assistant":
                 parts: List[Dict[str, Any]] = []
                 if m.get("content"):
@@ -121,7 +148,11 @@ class GeminiProvider(BaseAIProvider):
                 if parts:
                     contents.append({"role": "model", "parts": parts})
             else:
-                contents.append({"role": "user", "parts": [{"text": m.get("content", "")}]})
+                text = m.get("content", "")
+                if contents and contents[-1].get("role") == "user" and "text" in contents[-1]["parts"][0]:
+                    contents[-1]["parts"].append({"text": text})
+                else:
+                    contents.append({"role": "user", "parts": [{"text": text}]})
         return contents
 
     async def generate_with_tools(

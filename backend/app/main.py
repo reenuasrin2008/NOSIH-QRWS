@@ -151,6 +151,15 @@ class UpdateConfigReq(BaseModel):
     qaoa_shots: Optional[int] = Field(default=None, ge=128, le=2048)
 
 
+
+def _describe_sector(x: float, z: float, world_size: float = 4000.0) -> str:
+    if abs(z - world_size * 0.5) < 340 and abs(x - world_size * 0.5) < 650:
+        return "Central Adyar River Corridor"
+    ns = "Northern" if z < world_size * 0.36 else ("Southern" if z > world_size * 0.64 else "Central")
+    ew = "Western" if x < world_size * 0.36 else ("Eastern" if x > world_size * 0.64 else "Downtown")
+    return f"{ns} {ew} Sector"
+
+
 class AppRuntime:
     def __init__(self):
         self.journal: EventJournal = EventJournal()
@@ -172,13 +181,20 @@ class AppRuntime:
     async def broadcast_meaningful_event(self, event_type: str, data: Dict[str, Any]) -> None:
         if self.ws_manager.active:
             w = self.active_world()
+            avail_drones = sum(1 for d in w.drones.values() if d.status == DroneStatus.AVAILABLE)
+            enriched = dict(data) if isinstance(data, dict) else {"raw": data}
+            ep = enriched.get("epicentre")
+            if isinstance(ep, dict) and "x" in ep and "z" in ep:
+                enriched["sector_name"] = _describe_sector(float(ep["x"]), float(ep["z"]), w.city.world_size)
+            enriched.setdefault("available_drones_count", avail_drones)
+            enriched.setdefault("total_survivors_count", len(w.survivors))
             await self.ws_manager.broadcast({
                 "type": "meaningful_event",
                 "event_type": event_type,
                 "run_id": w.run_id,
                 "state_version": w.state_version,
                 "sim_time_s": w.sim_time_s,
-                "data": data,
+                "data": enriched,
             })
 
     def current_payload(self, include_city: bool = False) -> Dict[str, Any]:
@@ -786,6 +802,8 @@ async def set_drone_waypoint(drone_id: str, req: WaypointReq):
             raise HTTPException(400, res.get("error", "Infeasible waypoint"))
         state = runtime.current_payload(include_city=False)
     await runtime.ws_manager.broadcast(state)
+    if req.event_kind in ("new_flood", "new_fire", "expand_fire", "heavy_rain", "close_airspace"):
+        await runtime.broadcast_meaningful_event(f"environment_{req.event_kind}", {"type": req.event_kind, "message": res.get("message", "")})
     return {"result": res, "state": state}
 
 

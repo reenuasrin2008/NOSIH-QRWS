@@ -253,7 +253,7 @@ class WeatherState(BaseModel):
     fog_density: float = 0.12
     visibility_m: float = 1200.0
     lightning_active: bool = False
-    day_mode: bool = False
+    day_mode: bool = True
 
 
 class CityEnvironment(BaseModel):

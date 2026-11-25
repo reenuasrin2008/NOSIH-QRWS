@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "====================================================="
 echo "           QUANTUM RESCUE V2"
-echo "      AUTONOMOUS DISASTER RESPONSE SYSTEM"
+echo "       WORLD  |  CONTROL PANEL  |  JARVIS"
 echo "====================================================="
 
 if [ ! -d "backend/.venv" ]; then
@@ -24,25 +24,28 @@ if [ ! -d "frontend/node_modules" ]; then
   (cd frontend && npm install)
 fi
 
-trap 'echo "Stopping all Quantum Rescue V2 services..."; kill 0' EXIT INT TERM
+trap 'echo "Stopping all Quantum Rescue V2 servers..."; kill 0' EXIT INT TERM
 
-echo "[1] SIMULATION BACKEND       http://127.0.0.1:8000"
+echo "[1] SIMULATION ENGINE  http://127.0.0.1:8000"
 (cd backend && .venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000) &
 sleep 2
 
-echo "[2] 3D VISUAL ENVIRONMENT    http://localhost:5173"
-(cd frontend && npm run dev:scene) &
+echo "[2] WORLD              http://localhost:5173"
+(cd frontend && npm run dev:world) &
 
-echo "[3] MISSION CONTROL PANEL    http://localhost:5174"
+echo "[3] CONTROL PANEL      http://localhost:5174"
 (cd frontend && npm run dev:control) &
 
-echo "[4] AI AGENT BACKEND         http://127.0.0.1:8001"
+echo "[4] JARVIS AI ENGINE   http://127.0.0.1:8001"
 (cd agent_backend && ../backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001) &
 
-echo "[5] AI RESCUE COMMAND CONSOLE http://localhost:5175"
-(cd frontend && npm run dev:agent) &
+echo "[5] JARVIS             http://localhost:5175"
+(cd frontend && npm run dev:jarvis) &
 
 echo "====================================================="
-echo "ALL SERVICES STARTED"
+echo "ALL SERVERS STARTED"
+echo "  WORLD         : http://localhost:5173"
+echo "  CONTROL PANEL : http://localhost:5174"
+echo "  JARVIS        : http://localhost:5175"
 echo "====================================================="
 wait

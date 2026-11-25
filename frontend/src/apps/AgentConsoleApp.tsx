@@ -27,6 +27,39 @@ interface SpeechRecognitionLike {
   stop: () => void;
 }
 
+
+function sectorFromCoords(x: number, z: number): string {
+  if (Math.abs(z - 2000) < 340 && Math.abs(x - 2000) < 650) return "Central Adyar River Corridor";
+  const ns = z < 1440 ? "Northern" : z > 2560 ? "Southern" : "Central";
+  const ew = x < 1440 ? "Western" : x > 2560 ? "Eastern" : "Downtown";
+  return `${ns} ${ew} Sector`;
+}
+
+function playStarkAlertChime() {
+  try {
+    const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioCtx) return;
+    const ctx = new AudioCtx();
+    const now = ctx.currentTime;
+    [523.25, 659.25, 783.99].forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.setValueAtTime(freq, now + idx * 0.08);
+      gain.gain.setValueAtTime(0.001, now + idx * 0.08);
+      gain.gain.exponentialRampToValueAtTime(0.09, now + idx * 0.08 + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + idx * 0.08 + 0.35);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + idx * 0.08);
+      osc.stop(now + idx * 0.08 + 0.38);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 700);
+  } catch {
+    /* ignore audio policy restrictions before user gesture */
+  }
+}
+
 function pickJarvisVoice(): SpeechSynthesisVoice | null {
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
   const voices = window.speechSynthesis.getVoices();
@@ -68,11 +101,33 @@ export const AgentConsoleApp: React.FC = () => {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [spokenSubtitle, setSpokenSubtitle] = useState("Click WAKE J.A.R.V.I.S. or press the microphone to begin.");
   const [speechPulse, setSpeechPulse] = useState(0);
+  const [alertFlash, setAlertFlash] = useState(false);
+  const [emergencyAlert, setEmergencyAlert] = useState<{
+    eventId: string;
+    type: string;
+    sector: string;
+    severityPct: number;
+    radius: number;
+    buildings: number;
+    roads: number;
+    survivors: number;
+    availableDrones: number;
+    x: number;
+    z: number;
+  } | null>(null);
+  const announcedDisastersRef = useRef<Set<string>>(new Set());
+  const initializedDisastersRef = useRef(false);
   const [eqBars, setEqBars] = useState<number[]>(Array(24).fill(12));
 
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const speakEnabledRef = useRef(speakResponses);
   const jarvisAwakeRef = useRef(jarvisAwake);
+  const sessionIdRef = useRef(sessionId);
+  const sendingRef = useRef(sending);
+  const voiceDispatchedRef = useRef(false);
+
+  useEffect(() => { sessionIdRef.current = sessionId; }, [sessionId]);
+  useEffect(() => { sendingRef.current = sending; }, [sending]);
 
   useEffect(() => {
     speakEnabledRef.current = speakResponses;
@@ -114,8 +169,14 @@ export const AgentConsoleApp: React.FC = () => {
   };
 
   useEffect(() => {
-    document.title = "J.A.R.V.I.S. — QUANTUM RESCUE V2 (:5175)";
+    document.title = "JARVIS — QUANTUM RESCUE (:5175)";
     if ("speechSynthesis" in window) window.speechSynthesis.getVoices();
+    const unlockAudio = () => {
+      setJarvisAwake(true);
+      jarvisAwakeRef.current = true;
+    };
+    window.addEventListener("pointerdown", unlockAudio, { once: true });
+    window.addEventListener("keydown", unlockAudio, { once: true });
     refreshStatus();
     agentApi.getCurrentSession().then((s) => setSessionId(s.session_id)).catch(() => {});
 
@@ -155,9 +216,13 @@ export const AgentConsoleApp: React.FC = () => {
           return [...prev.slice(-10), rec];
         });
       } else if (msg.type === "world_alert") {
-        const evName = String(msg.payload.event_type || "EVENT").replace(/_/g, " ");
-        if (jarvisAwakeRef.current) {
-          speakAsJarvis(`Alert, sir. Live simulation reported ${evName}. Standing by for rescue dispatch.`);
+        const rawType = String(msg.payload.event_type || "");
+        if (!rawType.startsWith("disaster_") && jarvisAwakeRef.current) {
+          const evName = rawType.replace(/_/g, " ");
+          setAlertFlash(true);
+          setTimeout(() => setAlertFlash(false), 3000);
+          playStarkAlertChime();
+          speakAsJarvis(`Warning! Immediate attention required, sir. Simulation reported ${evName}. Ready for your orders.`);
         }
       } else if (msg.type === "execution_completed" || msg.type === "approval_executed") {
         refreshStatus();
@@ -172,9 +237,65 @@ export const AgentConsoleApp: React.FC = () => {
     };
   }, [speakAsJarvis]);
 
+
+  // REAL-TIME PROACTIVE JARVIS AWAKENING: detects ANY new disaster created in Control Panel (:5174)
+  useEffect(() => {
+    const disList = activeState?.disasters || [];
+    if (!initializedDisastersRef.current) {
+      if (activeState) {
+        disList.forEach((d) => announcedDisastersRef.current.add(d.event_id));
+        initializedDisastersRef.current = true;
+      }
+      return;
+    }
+
+    const newlyCreated = disList.filter((d) => !announcedDisastersRef.current.has(d.event_id));
+    if (!newlyCreated.length) return;
+
+    const latest = newlyCreated[newlyCreated.length - 1];
+    newlyCreated.forEach((d) => announcedDisastersRef.current.add(d.event_id));
+
+    const sector = sectorFromCoords(latest.epicentre.x, latest.epicentre.z);
+    const sevPct = Math.round(latest.severity * 100);
+    const bCount = latest.affected_buildings?.length || 0;
+    const rCount = latest.affected_roads?.length || 0;
+    const sCount = latest.related_survivors?.length || 0;
+    const availCount = (activeState?.drones || []).filter((d) => d.status === "AVAILABLE").length;
+    const dLabel = latest.type.replace(/_/g, " ");
+
+    setJarvisAwake(true);
+    jarvisAwakeRef.current = true;
+    setAlertFlash(true);
+    setTimeout(() => setAlertFlash(false), 3800);
+
+    setEmergencyAlert({
+      eventId: latest.event_id,
+      type: dLabel,
+      sector,
+      severityPct: sevPct,
+      radius: Math.round(latest.affected_radius),
+      buildings: bCount,
+      roads: rCount,
+      survivors: sCount,
+      availableDrones: availCount,
+      x: latest.epicentre.x,
+      z: latest.epicentre.z,
+    });
+
+    playStarkAlertChime();
+    const warningSpeech =
+      `Warning! Immediate action required, sir. A severity ${sevPct} percent ${dLabel} has been detected in the ${sector}, ` +
+      `event ${latest.event_id}, spanning a ${Math.round(latest.affected_radius)} meter radius. ` +
+      `${bCount} buildings and ${rCount} roads are impacted, with ${sCount} simulated survivors in the zone and ${availCount} rescue drones available. ` +
+      `Recommended actions: dispatch emergency rescue drones immediately, initiate a thermal survivor scan, or lock the 3D world camera onto the epicentre. Shall I deploy rescue units now?`;
+    speakAsJarvis(warningSpeech);
+  }, [activeState, speakAsJarvis]);
+
   const runningTool = liveTools.find((t) => t.status === "RUNNING");
   const latestTrace = traces[traces.length - 1];
-  const jarvisState: JarvisState = voiceListening
+  const jarvisState: JarvisState = alertFlash
+    ? "ALERT"
+    : voiceListening
     ? "LISTENING"
     : runningTool
     ? "EXECUTING"
@@ -216,7 +337,9 @@ export const AgentConsoleApp: React.FC = () => {
 
   const sendCommand = async (rawText: string) => {
     const text = rawText.trim();
-    if (!text || sending) return;
+    if (!text || sendingRef.current) return;
+    voiceDispatchedRef.current = true;
+    sendingRef.current = true;
     setJarvisAwake(true);
     setSending(true);
     setInput("");
@@ -226,7 +349,7 @@ export const AgentConsoleApp: React.FC = () => {
     try {
       const trace = await agentApi.sendChat({
         message: text,
-        session_id: sessionId || undefined,
+        session_id: sessionIdRef.current || undefined,
       });
       setSessionId(trace.session_id);
       setTraces((prev) => [...prev, trace]);
@@ -236,6 +359,7 @@ export const AgentConsoleApp: React.FC = () => {
       const msg = err instanceof Error ? err.message : String(err);
       speakAsJarvis(`Warning, sir. Agent service reported an error: ${msg}`);
     } finally {
+      sendingRef.current = false;
       setSending(false);
     }
   };
@@ -263,17 +387,26 @@ export const AgentConsoleApp: React.FC = () => {
     rec.lang = "en-US";
     rec.interimResults = true;
     rec.continuous = false;
+    voiceDispatchedRef.current = false;
+    let finalTranscript = "";
     rec.onresult = (e) => {
       let tr = "";
       for (let i = 0; i < e.results.length; i++) tr += e.results[i][0].transcript;
-      setVoiceDraft(tr);
-      setSpokenSubtitle(`Listening: “${tr}”`);
+      finalTranscript = tr.trim();
+      setVoiceDraft(finalTranscript);
+      setSpeechPulse((p) => p + 1);
+      setSpokenSubtitle(`Listening: “${finalTranscript}”`);
     };
     rec.onerror = (e) => {
       setVoiceError(`Voice error: ${e.error}`);
       setVoiceListening(false);
     };
-    rec.onend = () => setVoiceListening(false);
+    rec.onend = () => {
+      setVoiceListening(false);
+      if (finalTranscript && !voiceDispatchedRef.current) {
+        sendCommand(finalTranscript);
+      }
+    };
     recognitionRef.current = rec;
     setVoiceListening(true);
     setSpokenSubtitle("Listening to your voice command, sir...");
@@ -330,7 +463,11 @@ export const AgentConsoleApp: React.FC = () => {
         <div className="flex items-center gap-1.5 text-[10px] tabular-nums">
           <span className="px-2 py-1 bg-black/55 backdrop-blur-md border border-zinc-800 flex items-center gap-1">
             <Radio className={`w-3 h-3 ${simConnected ? "text-emerald-400" : "text-red-400"}`} />
-            SIM {simConnected ? "LIVE" : "OFF"}
+            WORLD {simConnected ? "LIVE" : "OFF"}
+          </span>
+          <span className="px-2 py-1 bg-black/55 backdrop-blur-md border border-zinc-800 flex items-center gap-1">
+            <Radio className={`w-3 h-3 ${agentConnected ? "text-amber-400" : "text-red-400"}`} />
+            AI {agentConnected ? "LIVE" : "OFF"}
           </span>
           <span className="px-2 py-1 bg-black/55 backdrop-blur-md border border-zinc-800 text-amber-300">
             DIS {disasters.length}
@@ -378,7 +515,7 @@ export const AgentConsoleApp: React.FC = () => {
           rel="noreferrer"
           className="px-2.5 py-1.5 bg-black/55 backdrop-blur-md border border-zinc-700 text-zinc-200 hover:border-zinc-400 flex items-center gap-1"
         >
-          3D :5173 <ExternalLink className="w-3 h-3" />
+          WORLD :5173 <ExternalLink className="w-3 h-3" />
         </a>
         <a
           href="http://localhost:5174"
@@ -386,7 +523,7 @@ export const AgentConsoleApp: React.FC = () => {
           rel="noreferrer"
           className="px-2.5 py-1.5 bg-black/55 backdrop-blur-md border border-zinc-700 text-zinc-200 hover:border-zinc-400 flex items-center gap-1"
         >
-          TERMINAL :5174 <ExternalLink className="w-3 h-3" />
+          CONTROL PANEL :5174 <ExternalLink className="w-3 h-3" />
         </a>
         <button
           onClick={() => setDrawerOpen(!drawerOpen)}
@@ -448,6 +585,69 @@ export const AgentConsoleApp: React.FC = () => {
               </button>
               <button onClick={() => handleReject(pendingApprovalTrace.execution_id)} className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300">
                 DENY
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+
+      {/* FLOATING PROACTIVE EMERGENCY WARNING & IMMEDIATE ACTIONS CARD */}
+      <AnimatePresence>
+        {emergencyAlert && !pendingApprovalTrace && (
+          <motion.div
+            initial={{ opacity: 0, y: 20, scale: 0.96 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 12, scale: 0.96 }}
+            className="absolute bottom-36 left-1/2 -translate-x-1/2 z-30 w-[640px] max-w-[94vw] p-3.5 bg-black/85 backdrop-blur-xl border border-red-500/80 shadow-[0_0_32px_rgba(239,68,68,0.35)] space-y-2.5 text-[11px]"
+          >
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2 text-red-400 font-bold tracking-wider uppercase">
+                <ShieldAlert className="w-4 h-4 animate-pulse" />
+                WARNING — IMMEDIATE ACTION REQUIRED ({emergencyAlert.eventId} · {emergencyAlert.type})
+              </div>
+              <button onClick={() => setEmergencyAlert(null)} className="text-zinc-400 hover:text-white"><X className="w-4 h-4" /></button>
+            </div>
+            <div className="text-zinc-200 leading-relaxed">
+              <span className="text-amber-300 font-bold">{emergencyAlert.sector}</span> — Severity{" "}
+              <span className="text-red-300 font-bold">{emergencyAlert.severityPct}%</span>, Radius{" "}
+              <span className="text-zinc-100">{emergencyAlert.radius}m</span>. Impact:{" "}
+              <span className="text-amber-200">{emergencyAlert.buildings} buildings</span>,{" "}
+              <span className="text-amber-200">{emergencyAlert.roads} roads</span>,{" "}
+              <span className="text-red-300 font-bold">{emergencyAlert.survivors} simulated survivors</span> ({emergencyAlert.availableDrones} drones ready).
+            </div>
+            <div className="flex flex-wrap gap-2 pt-0.5 text-[10px]">
+              <button
+                disabled={sending}
+                onClick={() => {
+                  const eid = emergencyAlert.eventId;
+                  setEmergencyAlert(null);
+                  sendCommand(`Use plan_and_dispatch_disaster_response for ${eid} with max_drones 4 and report verified rescue assignments.`);
+                }}
+                className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-black font-bold"
+              >
+                1. DISPATCH RESCUE DRONES
+              </button>
+              <button
+                disabled={sending}
+                onClick={() => {
+                  const { x, z, radius, eventId } = emergencyAlert;
+                  setEmergencyAlert(null);
+                  sendCommand(`Run search_area_for_survivors at x=${x}, z=${z}, radius=${Math.max(350, radius)} for ${eventId} and prioritize survivors.`);
+                }}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-amber-500/60 text-amber-200 font-bold"
+              >
+                2. THERMAL SURVIVOR SCAN
+              </button>
+              <button
+                onClick={() => {
+                  api.syncUi("camera_mode", { mode: "disaster_focus" });
+                  api.syncUi("focus_point", { point: [emergencyAlert.x, 25, emergencyAlert.z] });
+                  speakAsJarvis(`Locking 3D World camera onto ${emergencyAlert.sector}, sir.`);
+                }}
+                className="px-3 py-1.5 bg-zinc-900 hover:bg-zinc-800 border border-zinc-600 text-zinc-200"
+              >
+                3. FOCUS WORLD (:5173)
               </button>
             </div>
           </motion.div>
